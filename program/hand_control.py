@@ -271,11 +271,38 @@ class Camera:
             self.cap.release()
 
 
+def _ssl_context():
+    """Use certifi's certificates when available. python.org installs on macOS
+    often ship without system certificates, which breaks HTTPS downloads."""
+    import ssl
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
+
+
 def ensure_model():
     if os.path.exists(MODEL_PATH):
         return
     print(f"Downloading hand model to {MODEL_PATH} ...")
-    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    tmp = MODEL_PATH + ".part"
+    try:
+        with urllib.request.urlopen(MODEL_URL, context=_ssl_context(), timeout=60) as r, \
+                open(tmp, "wb") as f:
+            while chunk := r.read(1 << 16):
+                f.write(chunk)
+        os.replace(tmp, MODEL_PATH)
+    except Exception as e:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        hint = ""
+        if "CERTIFICATE_VERIFY_FAILED" in str(e):
+            hint = ("Fix: run 'pip install certifi' and try again, or on macOS run "
+                    "'Install Certificates.command' from your Python folder in Applications. ")
+        raise RuntimeError(
+            f"Couldn't download the hand model ({e}). {hint}"
+            f"Or download it manually from {MODEL_URL} and save it as {MODEL_PATH}") from None
 
 
 def create_landmarker():

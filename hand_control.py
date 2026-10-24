@@ -58,6 +58,27 @@ ROLL_RANGE = (-60.0, 60.0)    # hand tilt in degrees
 FIST_CLOSE_BELOW = 1.15
 FIST_OPEN_ABOVE = 1.40
 
+# --- Floor boundary -------------------------------------------------------
+# Measure your arm (cm) so the program knows where the floor is. Every command
+# is checked before it is sent: if any part of the arm would go below the floor,
+# the elbow (or, if that can't fix it, the shoulder) is raised just enough.
+ARM_GEOMETRY = {
+    "shoulder_height": 7.0,   # floor to the shoulder pivot
+    "upper_arm": 15.0,        # shoulder pivot to elbow pivot
+    "forearm": 13.0,          # elbow pivot to wrist
+    "gripper": 6.0,           # wrist to fingertips
+    "gripper_half_width": 2.5,  # center of gripper to outside of a finger (open)
+}
+FLOOR_MARGIN_CM = 1.5         # keep at least this much clearance above the floor
+FLOOR_GUARD = True            # set False to disable (not recommended)
+
+# How servo angles relate to the arm's pose. Check these on your arm:
+SHOULDER_LEVEL_AT = 45        # shoulder servo angle where the upper arm is horizontal
+SHOULDER_DIR = 1              # +1 if a bigger shoulder angle lifts the arm, else -1
+ELBOW_STRAIGHT_AT = 150       # elbow servo angle where the forearm lines up with the upper arm
+ELBOW_DIR = 1                 # +1 if a bigger elbow angle straightens/lifts the forearm, else -1
+WRIST_LEVEL_AT = 90           # wrist servo angle where the gripper jaws are side by side
+
 SMOOTHING = 0.35      # 0..1, lower = smoother but laggier
 DEADBAND_DEG = 1.5    # don't resend unless some joint moved at least this much
 SEND_HZ = 30          # max serial packets per second
@@ -162,6 +183,91 @@ class Smoother:
 
     def reset_home(self):
         self.state = {j: float(SERVOS[j][2]) for j in JOINT_ORDER}
+
+
+# --------------------------------------------------------------------------
+# Arm kinematics + floor boundary
+# --------------------------------------------------------------------------
+def arm_kinematics(angles):
+    """Joint positions in cm. Axes: x = right, y = forward, z = up (floor at z = 0)."""
+    g = ARM_GEOMETRY
+    th = math.radians(angles["base"] - 90)
+    e1 = math.radians(SHOULDER_DIR * (angles["shoulder"] - SHOULDER_LEVEL_AT))
+    e2 = e1 - math.radians(ELBOW_DIR * (ELBOW_STRAIGHT_AT - angles["elbow"]))
+    roll = math.radians(angles["wrist"] - WRIST_LEVEL_AT)
+    fx, fy = math.sin(th), math.cos(th)
+
+    def along(p, elev, length):
+        c = math.cos(elev) * length
+        return (p[0] + c * fx, p[1] + c * fy, p[2] + math.sin(elev) * length)
+
+    S = (0.0, 0.0, g["shoulder_height"])
+    E = along(S, e1, g["upper_arm"])
+    W = along(E, e2, g["forearm"])
+    T = along(W, e2, g["gripper"])
+    return {"th": th, "e1": e1, "e2": e2, "roll": roll, "S": S, "E": E, "W": W, "T": T}
+
+
+def floor_clearance(angles):
+    """Lowest height (cm) of any part of the arm above the floor."""
+    k = arm_kinematics(angles)
+    # When the wrist rolls, one jaw swings below the gripper's center line.
+    spread = ARM_GEOMETRY["gripper_half_width"] * abs(math.sin(k["roll"]) * math.cos(k["e2"]))
+    return min(k["E"][2], k["W"][2] - spread, k["T"][2] - spread)
+
+
+def _is_safe(angles):
+    return floor_clearance(angles) >= FLOOR_MARGIN_CM
+
+
+def _nearest_safe(angles, joint, step=0.5):
+    """Smallest change to one joint that clears the floor, or None."""
+    mn, mx = SERVOS[joint][:2]
+    start = angles[joint]
+    trial = dict(angles)
+    for i in range(1, int((mx - mn) / step) + 2):
+        for v in (start + i * step, start - i * step):
+            if mn <= v <= mx:
+                trial[joint] = v
+                if _is_safe(trial):
+                    return abs(v - start), dict(trial)
+    return None
+
+
+def _elbow_height_ok(angles):
+    return arm_kinematics(angles)["E"][2] >= FLOOR_MARGIN_CM
+
+
+def enforce_floor(angles):
+    """Returns (safe_angles, limited). limited is True when the pose had to be raised.
+
+    Strategy: the arm stops at the floor and slides along it.
+      1. Bend the elbow up just enough to clear the floor.
+      2. If the elbow joint itself would be on the floor, lift the shoulder just
+         enough first, then do step 1.
+    Both steps make the smallest possible change, so the arm moves smoothly into
+    and along the boundary instead of jumping between poses.
+    """
+    if not FLOOR_GUARD or _is_safe(angles):
+        return dict(angles), False
+    fix = _nearest_safe(angles, "elbow")
+    if fix:
+        return fix[1], True
+    mn, mx = SERVOS["shoulder"][:2]
+    start, trial, step = angles["shoulder"], dict(angles), 0.5
+    for i in range(1, int((mx - mn) / step) + 2):
+        for v in (start + i * step, start - i * step):
+            if mn <= v <= mx:
+                trial["shoulder"] = v
+                if _elbow_height_ok(trial):
+                    fix = _nearest_safe(trial, "elbow") if not _is_safe(trial) else (0, dict(trial))
+                    if fix:
+                        return fix[1], True
+    # Nothing reachable clears the floor (check ARM_GEOMETRY): take the highest pose available.
+    best = max(((s_, e_) for s_ in range(mn, mx + 1, 2)
+                for e_ in range(SERVOS["elbow"][0], SERVOS["elbow"][1] + 1, 2)),
+               key=lambda se: floor_clearance({**angles, "shoulder": se[0], "elbow": se[1]}))
+    return {**angles, "shoulder": best[0], "elbow": best[1]}, True
 
 
 def encode_packet(angles):
@@ -336,7 +442,7 @@ class ArmTracker:
         self.smoother = Smoother()
         self.fist = FistDetector()
         self.paused = False
-        self.angles = dict(self.smoother.state)
+        self.angles, self.floor_limited = enforce_floor(self.smoother.state)
         self.link.send(self.angles, force=True)  # start at home
         self._t0 = time.monotonic()
         self._last_ts = -1
@@ -363,7 +469,9 @@ class ArmTracker:
             feats = hand_features(lm)
             self.fist.update(feats["openness"])
             if not self.paused:
-                self.angles = self.smoother.update(features_to_targets(feats, self.fist.closed))
+                smoothed = self.smoother.update(features_to_targets(feats, self.fist.closed))
+                # Floor boundary is applied last, so nothing unsafe ever reaches the arm.
+                self.angles, self.floor_limited = enforce_floor(smoothed)
                 self.link.send(self.angles)
         # No hand: send nothing, so the arm holds its last position.
         self.link.read_debug()
@@ -375,7 +483,8 @@ class ArmTracker:
             self._fps_count, self._fps_t = 0, now
 
         return {"frame": frame, "landmarks": lm, "features": feats, "fist": self.fist.closed,
-                "angles": dict(self.angles), "paused": self.paused, "fps": self.fps}
+                "angles": dict(self.angles), "floor_limited": self.floor_limited,
+                "paused": self.paused, "fps": self.fps}
 
     def toggle_pause(self):
         self.paused = not self.paused
@@ -383,7 +492,7 @@ class ArmTracker:
 
     def home(self):
         self.smoother.reset_home()
-        self.angles = dict(self.smoother.state)
+        self.angles, self.floor_limited = enforce_floor(self.smoother.state)
         self.link.send(self.angles, force=True)
 
     def close(self):
@@ -408,7 +517,8 @@ def run_headless(tracker, should_stop=lambda: False):
                 if state["features"] is None:
                     hand = "no hand"
                 print(f"FPS {state['fps']:4.1f} | {hand:7s} | "
-                      + "  ".join(f"{j}:{int(state['angles'][j])}" for j in JOINT_ORDER))
+                      + "  ".join(f"{j}:{int(state['angles'][j])}" for j in JOINT_ORDER)
+                      + ("  | FLOOR LIMIT" if state["floor_limited"] else ""))
     except KeyboardInterrupt:
         pass
     finally:
@@ -449,6 +559,8 @@ def draw_overlay(frame, state):
     else:
         lines.append("no hand - arm holding")
     lines.append("  ".join(f"{j[:2]}:{int(angles[j])}" for j in JOINT_ORDER))
+    if state.get("floor_limited"):
+        lines.append("FLOOR LIMIT - arm held above the floor")
     for i, text in enumerate(lines):
         y = 22 + i * 22
         cv2.putText(frame, text, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3)

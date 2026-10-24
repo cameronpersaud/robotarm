@@ -356,8 +356,8 @@ class Arm3DView(tk.Canvas):
     HOME_VIEW = (35.0, 24.0, 7.2)           # camera yaw, pitch (degrees), distance
     BASE_R, BASE_H = 0.55, 0.30             # base cylinder
     TURN_R, TURN_H = 0.42, 0.10             # turntable on top (rotates with the base)
-    SHOULDER_Z = 0.70                       # shoulder pivot height
-    UPPER, FORE = 1.5, 1.3                  # link lengths
+    SCALE = 0.1                             # model units per cm (arm sizes come from
+                                            # hc.ARM_GEOMETRY, the same numbers the floor guard uses)
     LIGHT = _norm((-0.45, -0.55, 0.85))
 
     BASE_COL, TURN_COL, BRACKET_COL = "#2b3745", "#36434f", "#465667"
@@ -370,6 +370,7 @@ class Arm3DView(tk.Canvas):
         self.view_yaw, self.view_pitch, self.view_dist = self.HOME_VIEW
         self.angles = {j: float(hc.SERVOS[j][2]) for j in hc.JOINT_ORDER}
         self.fist = False
+        self.floor_limited = False
         self._drag = None
         self._last_key = None
         self.bind("<Configure>", lambda e: self.redraw())
@@ -381,12 +382,12 @@ class Arm3DView(tk.Canvas):
         self.bind("<Button-5>", lambda e: self._zoom(1))
 
     # ---- input ---------------------------------------------------------------
-    def set_pose(self, angles, fist):
-        key = tuple(round(angles[j], 1) for j in hc.JOINT_ORDER) + (fist,)
+    def set_pose(self, angles, fist, floor_limited=False):
+        key = tuple(round(angles[j], 1) for j in hc.JOINT_ORDER) + (fist, floor_limited)
         if key == self._last_key:
             return                       # nothing moved: skip the redraw
         self._last_key = key
-        self.angles, self.fist = dict(angles), fist
+        self.angles, self.fist, self.floor_limited = dict(angles), fist, floor_limited
         self.redraw()
 
     def _press(self, e):
@@ -482,36 +483,36 @@ class Arm3DView(tk.Canvas):
         self._setup_camera(w, h)
         a = self.angles
 
-        # Forward kinematics (same angle conventions as the servos).
-        th = math.radians(a["base"] - 90)
+        # Forward kinematics: shared with the floor guard, so the model matches the arm.
+        k = hc.arm_kinematics(a)
+        th, e1, e2, roll = k["th"], k["e1"], k["e2"], k["roll"]
         fwd, side = (math.sin(th), math.cos(th), 0.0), (math.cos(th), -math.sin(th), 0.0)
-        e1 = math.radians(a["shoulder"] - 45)
-        e2 = e1 - math.radians(150 - a["elbow"])
         d1 = (math.cos(e1) * fwd[0], math.cos(e1) * fwd[1], math.sin(e1))
         d2 = (math.cos(e2) * fwd[0], math.cos(e2) * fwd[1], math.sin(e2))
-        S = (0.0, 0.0, self.SHOULDER_Z)
-        E = _add(S, _mul(d1, self.UPPER))
-        W = _add(E, _mul(d2, self.FORE))
+        S, E, W = (_mul(k[p], self.SCALE) for p in ("S", "E", "W"))
+        grip_len = hc.ARM_GEOMETRY["gripper"] * self.SCALE
+        half_w = hc.ARM_GEOMETRY["gripper_half_width"] * self.SCALE
 
         # Gripper frame: rolled about the forearm by the wrist servo.
-        roll = math.radians(a["wrist"] - 90)
         n2 = _cross(side, d2)
         gs = _add(_mul(side, math.cos(roll)), _mul(n2, math.sin(roll)))
         gn = _add(_mul(side, -math.sin(roll)), _mul(n2, math.cos(roll)))
         g_min, g_max, _, g_inv = hc.SERVOS["gripper"]
         closed = (a["gripper"] - g_min) / ((g_max - g_min) or 1)
         closed = 1 - closed if g_inv else closed
-        gap = 0.05 + 0.22 * (1 - max(0.0, min(1.0, closed)))
-        palm_end = _add(W, _mul(d2, 0.20))
+        open_gap = max(0.06, half_w - 0.045)
+        gap = 0.05 + (open_gap - 0.05) * (1 - max(0.0, min(1.0, closed)))
+        palm_end = _add(W, _mul(d2, grip_len * 0.35))
         fingers = []
         for sgn in (-1, 1):
             root = _add(palm_end, _mul(gs, sgn * gap))
-            fingers.append((root, _add(root, _mul(d2, 0.38))))
+            fingers.append((root, _add(root, _mul(d2, grip_len * 0.65))))
 
         # Floor, grid and shadow are always underneath everything else.
         x0, x1, y0, y1 = -3.0, 3.0, -1.5, 3.5
         floor = [self._project(p) for p in ((x0, y0, 0), (x1, y0, 0), (x1, y1, 0), (x0, y1, 0))]
-        self.create_polygon([c for q in floor for c in q[:2]], fill=self.FLOOR_COL, outline="")
+        self.create_polygon([c for q in floor for c in q[:2]], fill=self.FLOOR_COL,
+                            outline=DANGER if self.floor_limited else "", width=2)
         steps = 12
         for i in range(steps + 1):
             gx = x0 + (x1 - x0) * i / steps
@@ -525,6 +526,15 @@ class Arm3DView(tk.Canvas):
             (ax, ay, az), (bx, by, bz) = self._project(flat(p)), self._project(flat(q))
             self.create_line(ax, ay, bx, by, fill=self.SHADOW_COL, capstyle="round",
                              width=max(2, self.focal * 2 * r / ((az + bz) / 2)))
+        if self.floor_limited:
+            # Contact marker: rings on the floor under the lowest part of the arm.
+            low = min([E, W] + [t for _, t in fingers] + [r for r, _ in fingers],
+                      key=lambda p: p[2])
+            for rad, width in ((0.32, 2), (0.18, 2)):
+                ring = [self._project((low[0] + rad * math.cos(t), low[1] + rad * math.sin(t), 0))
+                        for t in (2 * math.pi * i / 28 for i in range(28))]
+                self.create_polygon([c for q in ring for c in q[:2]], fill="",
+                                    outline=DANGER, width=width)
 
         prims = []
         self._cylinder(prims, 0.0, self.BASE_H, self.BASE_R, self.BASE_COL)
@@ -533,7 +543,7 @@ class Arm3DView(tk.Canvas):
         for sgn in (-1, 1):
             off = _mul(side, sgn * 0.24)
             self._box(prims, _add((0, 0, self.BASE_H + self.TURN_H), off),
-                      _add((0, 0, self.SHOULDER_Z + 0.12), off),
+                      _add((0, 0, max(S[2] + 0.12, self.BASE_H + self.TURN_H + 0.1)), off),
                       side, fwd, 0.04, 0.18, self.BRACKET_COL)
         self._box(prims, S, E, side, _cross(side, d1), 0.13, 0.11, ACCENT, segments=3)
         self._box(prims, E, W, side, n2, 0.11, 0.09, ACCENT_DK, segments=3)
@@ -556,8 +566,14 @@ class Arm3DView(tk.Canvas):
                 self.create_oval(x - r * 0.55, y - r * 0.6, x + r * 0.15, y + r * 0.05,
                                  fill=fill, outline="")
 
-        self.create_text(8, h - 6, anchor="sw", width=w - 16, fill=MUTED, font=self.fonts.small,
-                         text="Drag to rotate · scroll to zoom · double-click to reset")
+        if self.floor_limited:
+            self.create_text(8, 8, anchor="nw", fill=DANGER, font=self.fonts.label,
+                             text="FLOOR LIMIT")
+        hint = self.create_text(8, h - 6, anchor="sw", width=w - 16, fill=MUTED,
+                                font=self.fonts.small,
+                                text="Drag to rotate · scroll to zoom · double-click to reset")
+        x1, y1, x2, y2 = self.bbox(hint)
+        self.tag_lower(self.create_rectangle(0, y1 - 4, w, h, fill=BG, outline=""), hint)
 
 
 class LivePage(Page):
@@ -730,6 +746,9 @@ class LivePage(Page):
             self.hint.config(text="Paused. The arm is frozen. Press Resume (or Space).", fg=WARM)
         elif not has_hand:
             self.hint.config(text="Raise one hand into view, palm facing the camera.", fg=WARM)
+        elif st.get("floor_limited"):
+            self.hint.config(text="Floor limit: the arm is held just above the floor. "
+                                  "Raise your hand to move it up.", fg=DANGER)
         elif st["fist"]:
             self.hint.config(text="Gripping! Open your hand to let go.", fg=WARM)
         else:
@@ -753,10 +772,7 @@ class LivePage(Page):
             bar.create_rectangle(0, 0, max(2, w * max(0.0, min(1.0, t))), 6,
                                  fill=WARM if (key == "gripper" and st["fist"]) else ACCENT,
                                  width=0)
-        self._draw_arm(st["angles"], st["fist"])
-
-    def _draw_arm(self, a, fist):
-        self.arm_view.set_pose(a, fist)
+        self.arm_view.set_pose(st["angles"], st["fist"], st.get("floor_limited", False))
 
 
 # --------------------------------------------------------------------------

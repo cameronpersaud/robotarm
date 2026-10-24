@@ -327,6 +327,239 @@ class PlatformPage(Page):
                 "picam": bool(self.picam_var.get()) and self.choice.get() == "pi"}
 
 
+# --------------------------------------------------------------------------
+# 3D arm model (pure Tk canvas: perspective projection + painter's algorithm)
+# --------------------------------------------------------------------------
+def _add(a, b): return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+def _sub(a, b): return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+def _mul(a, k): return (a[0] * k, a[1] * k, a[2] * k)
+def _dot(a, b): return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+def _norm(a):
+    n = math.sqrt(_dot(a, a)) or 1.0
+    return (a[0] / n, a[1] / n, a[2] / n)
+
+
+def _shade(hex_color, k):
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    return "#%02x%02x%02x" % tuple(max(0, min(255, int(c * k))) for c in (r, g, b))
+
+
+class Arm3DView(tk.Canvas):
+    """Live 3D model of the arm. Drag to orbit, scroll to zoom, double-click to reset.
+
+    World axes: X = right, Y = forward (away from the operator), Z = up.
+    The default view sits behind and above the arm, like you're operating it.
+    """
+
+    HOME_VIEW = (35.0, 24.0, 7.2)           # camera yaw, pitch (degrees), distance
+    BASE_R, BASE_H = 0.55, 0.30             # base cylinder
+    TURN_R, TURN_H = 0.42, 0.10             # turntable on top (rotates with the base)
+    SHOULDER_Z = 0.70                       # shoulder pivot height
+    UPPER, FORE = 1.5, 1.3                  # link lengths
+    LIGHT = _norm((-0.45, -0.55, 0.85))
+
+    BASE_COL, TURN_COL, BRACKET_COL = "#2b3745", "#36434f", "#465667"
+    FLOOR_COL, GRID_COL, SHADOW_COL = "#121920", "#1e2933", "#080b0f"
+
+    def __init__(self, parent, fonts, **kw):
+        super().__init__(parent, bg=BG, highlightthickness=1, highlightbackground=LINE,
+                         cursor="fleur", **kw)
+        self.fonts = fonts
+        self.view_yaw, self.view_pitch, self.view_dist = self.HOME_VIEW
+        self.angles = {j: float(hc.SERVOS[j][2]) for j in hc.JOINT_ORDER}
+        self.fist = False
+        self._drag = None
+        self._last_key = None
+        self.bind("<Configure>", lambda e: self.redraw())
+        self.bind("<ButtonPress-1>", self._press)
+        self.bind("<B1-Motion>", self._motion)
+        self.bind("<Double-Button-1>", self._reset)
+        self.bind("<MouseWheel>", lambda e: self._zoom(-1 if e.delta > 0 else 1))  # Win/macOS
+        self.bind("<Button-4>", lambda e: self._zoom(-1))                          # Linux
+        self.bind("<Button-5>", lambda e: self._zoom(1))
+
+    # ---- input ---------------------------------------------------------------
+    def set_pose(self, angles, fist):
+        key = tuple(round(angles[j], 1) for j in hc.JOINT_ORDER) + (fist,)
+        if key == self._last_key:
+            return                       # nothing moved: skip the redraw
+        self._last_key = key
+        self.angles, self.fist = dict(angles), fist
+        self.redraw()
+
+    def _press(self, e):
+        self._drag = (e.x, e.y)
+
+    def _motion(self, e):
+        if self._drag is None:
+            return
+        dx, dy = e.x - self._drag[0], e.y - self._drag[1]
+        self._drag = (e.x, e.y)
+        self.view_yaw = (self.view_yaw - dx * 0.5) % 360
+        self.view_pitch = max(5.0, min(85.0, self.view_pitch + dy * 0.4))
+        self.redraw()
+
+    def _reset(self, _e=None):
+        self.view_yaw, self.view_pitch, self.view_dist = self.HOME_VIEW
+        self.redraw()
+
+    def _zoom(self, direction):
+        self.view_dist = max(4.5, min(13.0, self.view_dist * (1.1 if direction > 0 else 1 / 1.1)))
+        self.redraw()
+
+    # ---- camera ----------------------------------------------------------------
+    def _setup_camera(self, w, h):
+        yaw, pitch, d = (math.radians(self.view_yaw), math.radians(self.view_pitch),
+                         self.view_dist)
+        target = (0.0, 0.8, 0.9)
+        self.eye = (target[0] + d * math.cos(pitch) * math.sin(yaw),
+                    target[1] - d * math.cos(pitch) * math.cos(yaw),
+                    target[2] + d * math.sin(pitch))
+        self.cf = _norm(_sub(target, self.eye))
+        self.cr = _norm(_cross(self.cf, (0, 0, 1)))
+        self.cu = _cross(self.cr, self.cf)
+        self.focal = min(w * 1.3, h * 1.8)
+        self.cx, self.cy = w / 2, h * 0.52
+
+    def _project(self, p):
+        v = _sub(p, self.eye)
+        z = max(0.1, _dot(v, self.cf))
+        return (self.cx + self.focal * _dot(v, self.cr) / z,
+                self.cy - self.focal * _dot(v, self.cu) / z, z)
+
+    # ---- geometry helpers (append depth-sorted primitives) -----------------------
+    def _face(self, prims, pts, normal, color):
+        center = _mul(pts[0], 0)
+        for p in pts:
+            center = _add(center, p)
+        center = _mul(center, 1 / len(pts))
+        if _dot(normal, _sub(self.eye, center)) <= 0:
+            return                       # back face: hidden
+        k = 0.42 + 0.78 * max(0.0, _dot(normal, self.LIGHT))
+        proj = [self._project(p) for p in pts]
+        depth = sum(q[2] for q in proj) / len(proj)
+        flat = [c for q in proj for c in q[:2]]
+        prims.append((depth, "poly", flat, _shade(color, k), _shade(color, k * 0.7)))
+
+    def _box(self, prims, p, q, s, n, hw, hh, color, segments=1):
+        """Rectangular bar from p to q; s/n are its unit side and up directions."""
+        u = _norm(_sub(q, p))
+        corners = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
+        ring = lambda c: [_add(c, _add(_mul(s, i * hw), _mul(n, j * hh))) for i, j in corners]
+        steps = [_add(p, _mul(_sub(q, p), t / segments)) for t in range(segments + 1)]
+        for a, b in zip(steps, steps[1:]):          # split long bars for better depth order
+            ra, rb = ring(a), ring(b)
+            for k in range(4):
+                (i0, j0), (i1, j1) = corners[k], corners[(k + 1) % 4]
+                normal = _norm(_add(_mul(s, i0 + i1), _mul(n, j0 + j1)))
+                self._face(prims, [ra[k], ra[(k + 1) % 4], rb[(k + 1) % 4], rb[k]], normal, color)
+        self._face(prims, ring(p)[::-1], _mul(u, -1), color)
+        self._face(prims, ring(q), u, color)
+
+    def _cylinder(self, prims, z0, z1, r, color, sides=22):
+        ring = [(r * math.cos(2 * math.pi * i / sides), r * math.sin(2 * math.pi * i / sides))
+                for i in range(sides)]
+        for i in range(sides):
+            (x0, y0), (x1, y1) = ring[i], ring[(i + 1) % sides]
+            mid = (2 * math.pi * (i + 0.5)) / sides
+            self._face(prims, [(x0, y0, z0), (x1, y1, z0), (x1, y1, z1), (x0, y0, z1)],
+                       (math.cos(mid), math.sin(mid), 0), color)
+        self._face(prims, [(x, y, z1) for x, y in ring], (0, 0, 1), color)
+
+    def _sphere(self, prims, c, r, color):
+        x, y, z = self._project(c)
+        rad = self.focal * r / z
+        prims.append((z - r, "ball", (x, y, rad), color, None))
+
+    # ---- scene -----------------------------------------------------------------
+    def redraw(self):
+        w, h = self.winfo_width(), self.winfo_height()
+        if w < 20 or h < 20:
+            return
+        self.delete("all")
+        self._setup_camera(w, h)
+        a = self.angles
+
+        # Forward kinematics (same angle conventions as the servos).
+        th = math.radians(a["base"] - 90)
+        fwd, side = (math.sin(th), math.cos(th), 0.0), (math.cos(th), -math.sin(th), 0.0)
+        e1 = math.radians(a["shoulder"] - 45)
+        e2 = e1 - math.radians(150 - a["elbow"])
+        d1 = (math.cos(e1) * fwd[0], math.cos(e1) * fwd[1], math.sin(e1))
+        d2 = (math.cos(e2) * fwd[0], math.cos(e2) * fwd[1], math.sin(e2))
+        S = (0.0, 0.0, self.SHOULDER_Z)
+        E = _add(S, _mul(d1, self.UPPER))
+        W = _add(E, _mul(d2, self.FORE))
+
+        # Gripper frame: rolled about the forearm by the wrist servo.
+        roll = math.radians(a["wrist"] - 90)
+        n2 = _cross(side, d2)
+        gs = _add(_mul(side, math.cos(roll)), _mul(n2, math.sin(roll)))
+        gn = _add(_mul(side, -math.sin(roll)), _mul(n2, math.cos(roll)))
+        g_min, g_max, _, g_inv = hc.SERVOS["gripper"]
+        closed = (a["gripper"] - g_min) / ((g_max - g_min) or 1)
+        closed = 1 - closed if g_inv else closed
+        gap = 0.05 + 0.22 * (1 - max(0.0, min(1.0, closed)))
+        palm_end = _add(W, _mul(d2, 0.20))
+        fingers = []
+        for sgn in (-1, 1):
+            root = _add(palm_end, _mul(gs, sgn * gap))
+            fingers.append((root, _add(root, _mul(d2, 0.38))))
+
+        # Floor, grid and shadow are always underneath everything else.
+        x0, x1, y0, y1 = -3.0, 3.0, -1.5, 3.5
+        floor = [self._project(p) for p in ((x0, y0, 0), (x1, y0, 0), (x1, y1, 0), (x0, y1, 0))]
+        self.create_polygon([c for q in floor for c in q[:2]], fill=self.FLOOR_COL, outline="")
+        steps = 12
+        for i in range(steps + 1):
+            gx = x0 + (x1 - x0) * i / steps
+            gy = y0 + (y1 - y0) * i / steps
+            for p, q in (((gx, y0, 0), (gx, y1, 0)), ((x0, gy, 0), (x1, gy, 0))):
+                (ax, ay, _), (bx, by, _) = self._project(p), self._project(q)
+                self.create_line(ax, ay, bx, by, fill=self.GRID_COL)
+        flat = lambda p: (p[0], p[1], 0.0)
+        for p, q, r in ((S, E, 0.13), (E, W, 0.11), (W, palm_end, 0.12),
+                        fingers[0] + (0.05,), fingers[1] + (0.05,)):
+            (ax, ay, az), (bx, by, bz) = self._project(flat(p)), self._project(flat(q))
+            self.create_line(ax, ay, bx, by, fill=self.SHADOW_COL, capstyle="round",
+                             width=max(2, self.focal * 2 * r / ((az + bz) / 2)))
+
+        prims = []
+        self._cylinder(prims, 0.0, self.BASE_H, self.BASE_R, self.BASE_COL)
+        self._cylinder(prims, self.BASE_H, self.BASE_H + self.TURN_H, self.TURN_R, self.TURN_COL)
+        # Shoulder bracket: two plates that turn with the base, so base rotation is visible.
+        for sgn in (-1, 1):
+            off = _mul(side, sgn * 0.24)
+            self._box(prims, _add((0, 0, self.BASE_H + self.TURN_H), off),
+                      _add((0, 0, self.SHOULDER_Z + 0.12), off),
+                      side, fwd, 0.04, 0.18, self.BRACKET_COL)
+        self._box(prims, S, E, side, _cross(side, d1), 0.13, 0.11, ACCENT, segments=3)
+        self._box(prims, E, W, side, n2, 0.11, 0.09, ACCENT_DK, segments=3)
+        grip_col = WARM if self.fist else "#d5dde5"
+        self._box(prims, W, palm_end, gs, gn, gap + 0.06, 0.08, "#9aa7b4")
+        for root, tip in fingers:
+            self._box(prims, root, tip, gs, gn, 0.045, 0.075, grip_col)
+        self._sphere(prims, S, 0.17, TEXT)
+        self._sphere(prims, E, 0.15, TEXT)
+        self._sphere(prims, W, 0.12, TEXT)
+
+        prims.sort(key=lambda t: -t[0])         # far to near
+        for _depth, kind, data, fill, outline in prims:
+            if kind == "poly":
+                self.create_polygon(data, fill=fill, outline=outline, width=1)
+            else:
+                x, y, r = data
+                self.create_oval(x - r, y - r, x + r, y + r, fill=_shade(fill, 0.75),
+                                 outline=_shade(fill, 0.45))
+                self.create_oval(x - r * 0.55, y - r * 0.6, x + r * 0.15, y + r * 0.05,
+                                 fill=fill, outline="")
+
+        self.create_text(8, h - 6, anchor="sw", width=w - 16, fill=MUTED, font=self.fonts.small,
+                         text="Drag to rotate · scroll to zoom · double-click to reset")
+
+
 class LivePage(Page):
     """Directions on the left, live video + stick model on the right."""
 
@@ -380,12 +613,8 @@ class LivePage(Page):
             bar.pack(fill="x", pady=(4, 0))
             self.rows[key] = (val, bar)
 
-        tk.Label(left, text="ARM MODEL", font=self.f.label, fg=MUTED,
-                 bg=PANEL).pack(anchor="w", pady=(14, 4))
-        self.arm_canvas = tk.Canvas(left, height=170, bg=BG, highlightthickness=1,
-                                    highlightbackground=LINE)
-        self.arm_canvas.pack(fill="x")
-
+        # Buttons are packed before the 3D view so they always keep their space;
+        # the 3D view then fills whatever height is left.
         btns = tk.Frame(left, bg=PANEL)
         btns.pack(side="bottom", fill="x")
         self.pause_btn = FlatButton(btns, "Pause", lambda: self.request("pause"), self.f,
@@ -395,6 +624,11 @@ class LivePage(Page):
                    width=100, height=40).pack(side="left", padx=8)
         FlatButton(btns, "Stop", self.app.stop_live, self.f, kind="danger",
                    width=100, height=40).pack(side="left")
+
+        tk.Label(left, text="ARM MODEL (3D)", font=self.f.label, fg=MUTED,
+                 bg=PANEL).pack(anchor="w", pady=(14, 4))
+        self.arm_view = Arm3DView(left, self.f, height=150)
+        self.arm_view.pack(fill="both", expand=True, pady=(0, 14))
 
         # ---- right: video ----------------------------------------------------
         right = tk.Frame(self, bg=BG)
@@ -522,40 +756,7 @@ class LivePage(Page):
         self._draw_arm(st["angles"], st["fist"])
 
     def _draw_arm(self, a, fist):
-        """Illustrative side view of the arm plus a top-view dial for the base."""
-        c = self.arm_canvas
-        c.delete("all")
-        w, h = max(c.winfo_width(), 200), max(c.winfo_height(), 150)
-        gx, gy = w * 0.38, h - 22
-        c.create_line(12, gy, w * 0.72, gy, fill=LINE, width=2)
-        c.create_rectangle(gx - 24, gy - 14, gx + 24, gy, fill=PANEL_HI, outline=LINE)
-        seg = min(w, h) * 0.36
-        sx, sy = gx, gy - 14
-        # Servo 90 = upper arm 45° up and forward; forearm bends relative to it.
-        e1 = math.radians(a["shoulder"] - 45)
-        ex, ey = sx + seg * math.cos(e1), sy - seg * math.sin(e1)
-        e2 = e1 - math.radians(150 - a["elbow"])
-        wx, wy = ex + seg * 0.85 * math.cos(e2), ey - seg * 0.85 * math.sin(e2)
-        for (x1, y1, x2, y2) in ((sx, sy, ex, ey), (ex, ey, wx, wy)):
-            c.create_line(x1, y1, x2, y2, fill=ACCENT, width=6, capstyle="round")
-        jaw = math.radians(8 if fist else 28)
-        jl = 16
-        for s in (1, -1):
-            ang = e2 + s * jaw
-            c.create_line(wx, wy, wx + jl * math.cos(ang), wy - jl * math.sin(ang),
-                          fill=WARM if fist else TEXT, width=4, capstyle="round")
-        for (x, y) in ((sx, sy), (ex, ey), (wx, wy)):
-            c.create_oval(x - 5, y - 5, x + 5, y + 5, fill=TEXT, outline=BG, width=2)
-        # Base dial (top view).
-        cx, cy, r = w - 42, 40, 26
-        c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=LINE, width=2)
-        b = math.radians(180 - a["base"])
-        c.create_line(cx, cy, cx + r * math.cos(b), cy - r * math.sin(b), fill=ACCENT,
-                      width=3, arrow="last")
-        c.create_text(cx, cy + r + 12, text="base", fill=MUTED, font=self.f.small)
-        # Wrist roll indicator.
-        c.create_text(cx, cy + r + 40, text=f"wrist {int(a['wrist'])}°", fill=MUTED,
-                      font=self.f.small)
+        self.arm_view.set_pose(a, fist)
 
 
 # --------------------------------------------------------------------------

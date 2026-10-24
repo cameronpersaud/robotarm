@@ -26,6 +26,8 @@ import cv2
 from PIL import Image, ImageTk
 
 import hand_control as hc
+import telemetry
+import voice
 
 # --------------------------------------------------------------------------
 # Look and feel
@@ -225,7 +227,7 @@ class InstructionsPage(Page):
                 row=r, column=0, sticky="w", pady=5)
             tk.Label(right, text=a, font=self.f.body, fg=ACCENT, bg=PANEL).grid(
                 row=r, column=1, sticky="w", padx=(28, 0))
-        tk.Label(right, text="Shortcuts on the live screen:  Space = pause,  H = home,  Esc = stop",
+        tk.Label(right, text="Live screen keys:  Space = pause,  H = home,  M = mute voice,  Esc = stop",
                  font=self.f.small, fg=MUTED, bg=PANEL).grid(row=8, column=0, columnspan=2,
                                                             sticky="w", pady=(12, 0))
 
@@ -277,6 +279,34 @@ class PlatformPage(Page):
             highlightthickness=0, bd=0)
         self.picam_check.grid(row=1, column=3, sticky="w", padx=(14, 0), pady=(4, 0))
 
+        # Extras: ElevenLabs voice + Tiger Data logging (each needs a one-time setup).
+        extras = tk.Frame(wrap, bg=BG)
+        extras.pack(fill="x", pady=(18, 0))
+        tk.Label(extras, text="EXTRAS", font=self.f.label, fg=MUTED, bg=BG).grid(
+            row=0, column=0, sticky="w", columnspan=2)
+        check = dict(font=self.f.body, fg=TEXT, bg=BG, selectcolor=PANEL, activebackground=BG,
+                     activeforeground=TEXT, highlightthickness=0, bd=0,
+                     disabledforeground=MUTED)
+        self.voice_var = tk.BooleanVar(value=True)
+        self.voice_check = tk.Checkbutton(extras, text="Voice feedback (ElevenLabs)",
+                                          variable=self.voice_var, **check)
+        self.voice_check.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.voice_note = tk.Label(extras, text="", font=self.f.small, fg=MUTED, bg=BG)
+        self.voice_note.grid(row=1, column=1, sticky="w", padx=(12, 0), pady=(4, 0))
+        self.log_var = tk.BooleanVar(value=True)
+        self.log_check = tk.Checkbutton(extras, text="Log session to Tiger Data",
+                                        variable=self.log_var, **check)
+        self.log_check.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self.log_note = tk.Label(extras, text="", font=self.f.small, fg=MUTED, bg=BG)
+        self.log_note.grid(row=2, column=1, sticky="w", padx=(12, 0), pady=(4, 0))
+        tk.Label(extras, text="Session label (optional, e.g. a patient name)", font=self.f.small,
+                 fg=MUTED, bg=BG).grid(row=3, column=0, sticky="w", pady=(8, 0))
+        self.label_var = tk.StringVar(value="")
+        tk.Entry(extras, textvariable=self.label_var, width=24, font=self.f.body, bg=PANEL,
+                 fg=TEXT, insertbackground=TEXT, relief="flat", highlightthickness=1,
+                 highlightbackground=LINE, highlightcolor=ACCENT).grid(
+            row=3, column=1, sticky="w", padx=(12, 0), pady=(8, 0))
+
         self.choice.trace_add("write", lambda *_: self._update())
 
     def _make_card(self, parent, key, title, desc, col):
@@ -312,8 +342,20 @@ class PlatformPage(Page):
                           ("arduino", "acm", "usbmodem", "ch340", "usb serial"))), None)
             self.port_var.set(guess or PREVIEW_ONLY)
 
+    def refresh_extras(self):
+        has_clips = voice.clips_ready()
+        self.voice_check.config(state="normal" if has_clips else "disabled")
+        self.voice_note.config(text=f"{len(voice.PHRASES)} clips ready" if has_clips else
+                               "setup: python3 voice.py --generate")
+        has_db = bool(telemetry.database_url())
+        self.log_check.config(state="normal" if has_db else "disabled")
+        self.log_note.config(text="Tiger Cloud service configured" if has_db else
+                             "setup: add TIGER_DATABASE_URL to config.env")
+        self._extras_ok = (has_clips, has_db)
+
     def on_show(self):
         self.refresh_ports()
+        self.refresh_extras()
         self._update()
 
     def settings(self):
@@ -323,8 +365,12 @@ class PlatformPage(Page):
             cam = int(self.cam_var.get())
         except ValueError:
             cam = 0
+        has_clips, has_db = getattr(self, "_extras_ok", (False, False))
         return {"mode": self.choice.get(), "port": port, "camera": cam,
-                "picam": bool(self.picam_var.get()) and self.choice.get() == "pi"}
+                "picam": bool(self.picam_var.get()) and self.choice.get() == "pi",
+                "voice": has_clips and bool(self.voice_var.get()),
+                "log": has_db and bool(self.log_var.get()),
+                "label": self.label_var.get().strip() or None}
 
 
 # --------------------------------------------------------------------------
@@ -678,8 +724,15 @@ class LivePage(Page):
             self.error = str(e)
             self.running = False
             return
+        # Attached only once the camera works, so a failed start never logs an empty session.
+        self.tracker.listeners = make_listeners(s, device="pc")
         try:
             while self.running:
+                if "mute" in self.requests:
+                    self.requests.discard("mute")
+                    for listener in self.tracker.listeners:
+                        if listener.name == "voice":
+                            listener.muted = not listener.muted
                 if "pause" in self.requests:
                     self.requests.discard("pause")
                     self.tracker.toggle_pause()
@@ -696,20 +749,34 @@ class LivePage(Page):
         except Exception as e:
             self.error = str(e)
         finally:
-            self.tracker.close()
-            self.tracker = None
+            tracker, self.tracker = self.tracker, None
+            self.results = tracker.close()     # final Tiger Data flush + summary
 
     def request(self, what):
         self.requests.add(what)
 
-    def stop(self):
+    @property
+    def busy(self):
+        return self.worker is not None and self.worker.is_alive()
+
+    def stop(self, on_done=None, wait=0.0):
+        """Stop tracking. on_done(results) runs once the session has been saved."""
         self.running = False
         if self._poll_id:
             self.after_cancel(self._poll_id)
             self._poll_id = None
         if self.worker:
-            self.worker.join(timeout=3)
-            self.worker = None
+            self.worker.join(timeout=wait)
+            self._finish(on_done)
+
+    def _finish(self, on_done):
+        if self.busy:
+            self.after(100, lambda: self._finish(on_done))
+            return
+        self.worker = None
+        results, self.results = getattr(self, "results", None), None
+        if on_done:
+            on_done(results or {})
 
     # ---- UI refresh -----------------------------------------------------------
     def _poll(self):
@@ -754,8 +821,12 @@ class LivePage(Page):
         else:
             self.hint.config(text="Tracking. Move slowly; make a fist to grab.", fg=ACCENT)
         link = self.app.settings["port"] or "preview only, no arm connected"
-        self.status.config(text=f"Hand: {'detected' if has_hand else 'not found'}\n"
-                                f"Arm: {link}")
+        lines = [f"Hand: {'detected' if has_hand else 'not found'}", f"Arm: {link}"]
+        tracker = self.tracker
+        for listener in (tracker.listeners if tracker else ()):
+            title = "Voice (M to mute)" if listener.name == "voice" else "Tiger Data"
+            lines.append(f"{title}: {listener.status()}")
+        self.status.config(text="\n".join(lines))
         self.pause_btn.configure_button(text="Resume" if st["paused"] else "Pause")
 
         for key, (val, bar) in self.rows.items():
@@ -784,6 +855,7 @@ class App:
         self.fonts = Fonts()
         self.settings = {}
         self.launch_headless = None
+        self.saving = False
         root.title("Hand-Controlled Robot Arm")
         root.configure(bg=BG)
         root.geometry("1180x720")
@@ -809,6 +881,7 @@ class App:
 
         root.bind("<space>", lambda e: self._live_key("pause"))
         root.bind("<Key-h>", lambda e: self._live_key("home"))
+        root.bind("<Key-m>", lambda e: self._live_key("mute"))
         root.bind("<Escape>", lambda e: self.stop_live() if self.live.winfo_ismapped() else None)
         root.protocol("WM_DELETE_WINDOW", self.quit)
         self.show(0)
@@ -846,7 +919,9 @@ class App:
         if last:
             mode = self.pages[-1].choice.get()
             label = {"pc": "Start  →", "pi": "Go headless  →"}.get(mode, "Choose a device")
-            self.next_btn.configure_button(text=label, enabled=bool(mode))
+            if self.saving:
+                label = "Saving session…"
+            self.next_btn.configure_button(text=label, enabled=bool(mode) and not self.saving)
         else:
             self.next_btn.configure_button(text="Next  →", enabled=True)
         self.dots.delete("all")
@@ -879,15 +954,22 @@ class App:
         self.live.start(self.settings)
 
     def stop_live(self):
-        self.live.stop()
+        self.saving = True
         self.show(len(self.pages) - 1)
+        self.live.stop(on_done=self._session_done)
+
+    def _session_done(self, results):
+        self.saving = False
+        self.update_nav()
+        if "tiger" in results:
+            show_summary(self.root, self.fonts, telemetry.format_summary(results["tiger"]))
 
     def _live_key(self, what):
         if self.live.winfo_ismapped():
             self.live.request(what)
 
     def quit(self):
-        self.live.stop()
+        self.live.stop(wait=12.0)          # give Tiger Data time to save the session
         self.root.destroy()
 
 
@@ -898,15 +980,49 @@ def has_display():
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
-def run_pi_headless(port, camera=0, picam=False):
+def make_listeners(s, device):
+    listeners = []
+    if s.get("voice"):
+        listeners.append(voice.VoiceFeedback())
+    if s.get("log"):
+        listeners.append(telemetry.TigerLogger(device=device, user_label=s.get("label")))
+    return listeners
+
+
+def show_summary(root, fonts, text):
+    """Dark, monospaced popup for the Tiger Data session summary."""
+    win = tk.Toplevel(root, bg=PANEL, padx=26, pady=22)
+    win.title("Session summary")
+    win.transient(root)
+    win.resizable(False, False)
+    tk.Label(win, text="Session summary", font=fonts.h2, fg=TEXT, bg=PANEL).pack(anchor="w")
+    tk.Label(win, text=text, font=fonts.mono, fg=TEXT, bg=PANEL, justify="left").pack(
+        anchor="w", pady=(10, 16))
+    FlatButton(win, "OK", win.destroy, fonts, width=110, height=38).pack(anchor="e")
+    win.bind("<Return>", lambda e: win.destroy())
+    win.bind("<Escape>", lambda e: win.destroy())
+    win.update_idletasks()
+    x = root.winfo_rootx() + (root.winfo_width() - win.winfo_width()) // 2
+    y = root.winfo_rooty() + (root.winfo_height() - win.winfo_height()) // 3
+    win.geometry(f"+{max(0, x)}+{max(0, y)}")
+    win.grab_set()
+    return win
+
+
+def run_pi_headless(s):
+    port, camera, picam = s.get("port"), s.get("camera", 0), s.get("picam", False)
     print("\n=== Raspberry Pi mode: headless monitoring ===")
     print(f"Arm port: {port or 'none (preview only)'}   Camera: "
           f"{'Pi Camera Module' if picam else camera}")
+    print(f"Voice: {'on' if s.get('voice') else 'off'}   "
+          f"Tiger Data logging: {'on' if s.get('log') else 'off'}"
+          + (f"   Label: {s['label']}" if s.get("label") else ""))
     try:
         tracker = hc.ArmTracker(port=port, camera=camera, picam=picam,
                                 width=PI_RES[0], height=PI_RES[1])
     except Exception as e:
         sys.exit(f"Startup failed: {e}")
+    tracker.listeners = make_listeners(s, device="raspberry-pi")
     hc.run_headless(tracker)
 
 
@@ -917,12 +1033,18 @@ def main():
     ap.add_argument("--port", default=None, help="arm port for --headless, e.g. /dev/ttyACM0")
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--picam", action="store_true")
+    ap.add_argument("--voice", action="store_true", help="headless: spoken feedback")
+    ap.add_argument("--log", action="store_true", help="headless: log to Tiger Data")
+    ap.add_argument("--label", default=None, help="headless: session label")
     args = ap.parse_args()
 
     if args.headless or not has_display():
         if not args.headless:
             print("No display found, so starting in headless (Raspberry Pi) mode.")
-        run_pi_headless(args.port, args.camera, args.picam)
+        run_pi_headless({"port": args.port, "camera": args.camera, "picam": args.picam,
+                         "voice": args.voice and voice.clips_ready(),
+                         "log": args.log and bool(telemetry.database_url()),
+                         "label": args.label})
         return
 
     root = tk.Tk()
@@ -930,8 +1052,7 @@ def main():
     root.mainloop()
 
     if app.launch_headless:
-        s = app.launch_headless
-        run_pi_headless(s["port"], s["camera"], s["picam"])
+        run_pi_headless(app.launch_headless)
 
 
 if __name__ == "__main__":

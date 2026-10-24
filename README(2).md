@@ -38,6 +38,41 @@ pass `--port /dev/ttyACM0` (and `--picam` for a Pi Camera Module).
 
 If Tkinter is missing on Linux: `sudo apt install python3-tk`.
 
+## Voice feedback (ElevenLabs) and session logging (Tiger Data)
+
+Both are optional; the app works without them and shows how to set each one up.
+
+```bash
+pip install "psycopg[binary]"      # for Tiger Data
+cp config.env.example config.env   # then paste your keys into config.env
+```
+
+**ElevenLabs:** add `ELEVENLABS_API_KEY`, then generate the clips once (needs internet):
+```bash
+python3 voice.py --generate   # creates voice_clips/*.wav
+python3 voice.py --test       # plays them all
+```
+The app then speaks events: ready, hand detected/lost, gripping/released, floor limit,
+paused/resumed, home. It plays the saved clips, so no internet is needed during the demo.
+Edit the lines in `PHRASES` in `voice.py` and re-run `--generate` (only changed lines are redone).
+Press **M** on the live screen to mute.
+
+**Tiger Data:** create a free service at Tiger Cloud, copy its service URL into
+`TIGER_DATABASE_URL`, then:
+```bash
+python3 telemetry.py --setup   # creates the tables (the app also does this automatically)
+python3 telemetry.py           # report: recent sessions + minute-by-minute range of motion
+```
+Each session logs joint angles and hand measurements 10×/second into the `arm_telemetry`
+hypertable, plus events (grips, floor limits, hand lost) into `arm_events`. A continuous
+aggregate (`arm_motion_1m`) keeps range of motion per minute. When you press Stop, the app
+shows a summary computed in the database: duration, grips, range of motion per joint, and the
+change since the previous session with the same **session label** (e.g. a patient's name).
+If Wi-Fi drops, rows are buffered and written when it comes back; the arm never waits on it.
+
+Raspberry Pi headless: `python3 arm_gui.py --headless --port /dev/ttyACM0 --voice --log --label alex`
+(the summary prints when you press Ctrl+C).
+
 ## Run from the command line (no app)
 
 ```bash

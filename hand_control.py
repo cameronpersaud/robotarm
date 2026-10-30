@@ -86,26 +86,6 @@ SEND_HZ = 30          # max serial packets per second
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
              "hand_landmarker/float16/1/hand_landmarker.task")
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hand_landmarker.task")
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env")
-
-
-def get_setting(name, default=None):
-    """Read a setting from the environment, else from config.env (KEY=value lines)."""
-    if os.environ.get(name):
-        return os.environ[name]
-    try:
-        with open(CONFIG_PATH) as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                if key.strip() == name:
-                    value = value.strip().strip('"').strip("'")
-                    return value or default
-    except OSError:
-        pass
-    return default
 
 # MediaPipe landmark indices
 WRIST, THUMB_TIP = 0, 4
@@ -445,68 +425,12 @@ def create_landmarker():
 
 
 # --------------------------------------------------------------------------
-# Events: turn frame-by-frame state into moments worth announcing / logging
-# --------------------------------------------------------------------------
-class EventDetector:
-    """hand_found, hand_lost, grip, release, floor_limit, floor_clear (+ pushed ones).
-
-    Short debounce times stop a single flickery frame from triggering anything.
-    """
-
-    HAND_FOUND_AFTER = 0.25
-    HAND_LOST_AFTER = 0.8
-    FLOOR_CLEAR_AFTER = 0.6
-
-    def __init__(self):
-        self.hand = self.fist = self.floor = False
-        self._seen = self._missing = self._floor_clear = None
-        self._pending = []
-
-    def push(self, name):
-        self._pending.append(name)
-
-    def update(self, state, now=None):
-        now = time.monotonic() if now is None else now
-        events, self._pending = self._pending, []
-        if state["features"] is not None:
-            self._missing = None
-            self._seen = self._seen or now
-            if not self.hand and now - self._seen >= self.HAND_FOUND_AFTER:
-                self.hand = True
-                events.append("hand_found")
-            if self.hand and state["fist"] != self.fist:
-                self.fist = state["fist"]
-                events.append("grip" if self.fist else "release")
-        else:
-            self._seen = None
-            self._missing = self._missing or now
-            if self.hand and now - self._missing >= self.HAND_LOST_AFTER:
-                self.hand = False
-                events.append("hand_lost")
-        if state["floor_limited"]:
-            self._floor_clear = None
-            if not self.floor:
-                self.floor = True
-                events.append("floor_limit")
-        elif self.floor:
-            self._floor_clear = self._floor_clear or now
-            if now - self._floor_clear >= self.FLOOR_CLEAR_AFTER:
-                self.floor = False
-                events.append("floor_clear")
-        return events
-
-
-# --------------------------------------------------------------------------
 # Tracker: camera + hand model + mapping + serial, one frame at a time.
 # Used by both the command line (below) and the GUI (arm_gui.py).
 # --------------------------------------------------------------------------
 class ArmTracker:
     def __init__(self, port=None, baud=115200, camera=0, picam=False,
-                 width=320, height=240, echo=False, listeners=()):
-        self.listeners = list(listeners)   # e.g. VoiceFeedback, TigerLogger
-        self._listener_errors = set()
-        self.events = EventDetector()
-        self.events.push("session_start")
+                 width=320, height=240, echo=False):
         self.landmarker = create_landmarker()
         self.cam = Camera(camera, width, height, picam)
         try:
@@ -558,44 +482,23 @@ class ArmTracker:
             self.fps = self._fps_count / (now - self._fps_t)
             self._fps_count, self._fps_t = 0, now
 
-        state = {"frame": frame, "landmarks": lm, "features": feats, "fist": self.fist.closed,
-                 "angles": dict(self.angles), "floor_limited": self.floor_limited,
-                 "paused": self.paused, "fps": self.fps}
-        state["events"] = self.events.update(state)
-        for listener in self.listeners:
-            try:
-                listener.handle(state)
-            except Exception as e:        # a listener must never stop the arm
-                if listener.name not in self._listener_errors:
-                    self._listener_errors.add(listener.name)
-                    print(f"[{listener.name}] error, continuing without it: {e}")
-        return state
+        return {"frame": frame, "landmarks": lm, "features": feats, "fist": self.fist.closed,
+                "angles": dict(self.angles), "floor_limited": self.floor_limited,
+                "paused": self.paused, "fps": self.fps}
 
     def toggle_pause(self):
         self.paused = not self.paused
-        self.events.push("paused" if self.paused else "resumed")
         return self.paused
 
     def home(self):
         self.smoother.reset_home()
         self.angles, self.floor_limited = enforce_floor(self.smoother.state)
         self.link.send(self.angles, force=True)
-        self.events.push("home")
 
     def close(self):
-        """Stops everything. Returns {listener name: result}, e.g. the session summary."""
         self.cam.release()
         self.link.close()
         self.landmarker.close()
-        results = {}
-        for listener in self.listeners:
-            try:
-                result = listener.close()
-                if result:
-                    results[listener.name] = result
-            except Exception as e:
-                print(f"[{listener.name}] error while closing: {e}")
-        return results
 
 
 def run_headless(tracker, should_stop=lambda: False):
@@ -619,11 +522,7 @@ def run_headless(tracker, should_stop=lambda: False):
     except KeyboardInterrupt:
         pass
     finally:
-        print("Stopping...")
-        results = tracker.close()
-        if "tiger" in results:
-            import telemetry
-            print("\n" + telemetry.format_summary(results["tiger"]))
+        tracker.close()
         print("Stopped.")
 
 

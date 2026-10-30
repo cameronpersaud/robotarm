@@ -1,0 +1,1202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hand-Controlled Robot Arm</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="A robot arm you steer with your bare hand: webcam hand tracking, a 3D arm model and a floor safety limit.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: an equipment datasheet. A live rig console up top, then spec sections
+   with a narrow label column and a wide content column. */
+:root {
+  --paper: #eceff1;
+  --sheet: #f8f9fa;
+  --ink: #15181b;
+  --ink-2: #47515a;
+  --rule: #c7ced4;
+  --accent: #e2570f;        /* industrial robot orange */
+  --accent-ink: #ad3d06;
+  --grip: #1f5fc4;
+  --danger: #c01f2b;
+  --on-danger: #ffffff;
+  --stage: #0f1215;
+  --stage-ink: #e9edf0;
+  --stage-dim: #8d98a3;
+  --arm: #e8590c;
+  --arm-2: #b8470a;
+  --base3d: #59636d;
+  --turn3d: #6b7680;
+  --bracket3d: #808b96;
+  --joint3d: #f5f7f8;
+  --jaw3d: #c9d1d8;
+  --palm3d: #8f9aa5;
+  --floor3d: #dde2e6;
+  --grid3d: #c3cad0;
+  --shadow3d: #b2bac2;
+  --view3d: #f2f4f5;
+
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --step--1: 0.8125rem;
+  --step-0: 1rem;
+  --step-1: 1.1875rem;
+  --step-2: 1.5rem;
+  --step-3: clamp(1.75rem, 1.2rem + 2.4vw, 2.6rem);
+  --step-4: clamp(2.2rem, 1.3rem + 3.6vw, 3.8rem);
+  --radius: 6px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #101315; --sheet: #171b1e; --ink: #e6eaed; --ink-2: #9ba6b0; --rule: #2b3238;
+    --accent: #ff7a33; --accent-ink: #ff9259; --grip: #72a9ff; --danger: #ff5f66; --on-danger: #1a0b0c;
+    --arm: #f0661a; --arm-2: #c2500f; --base3d: #2e363d; --turn3d: #39434b; --bracket3d: #4b5761;
+    --joint3d: #e9edf0; --jaw3d: #c4ccd3; --palm3d: #7d8994; --floor3d: #151a1d; --grid3d: #242b31;
+    --shadow3d: #090b0d; --view3d: #0f1214;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #101315; --sheet: #171b1e; --ink: #e6eaed; --ink-2: #9ba6b0; --rule: #2b3238;
+  --accent: #ff7a33; --accent-ink: #ff9259; --grip: #72a9ff; --danger: #ff5f66; --on-danger: #1a0b0c;
+  --arm: #f0661a; --arm-2: #c2500f; --base3d: #2e363d; --turn3d: #39434b; --bracket3d: #4b5761;
+  --joint3d: #e9edf0; --jaw3d: #c4ccd3; --palm3d: #7d8994; --floor3d: #151a1d; --grid3d: #242b31;
+  --shadow3d: #090b0d; --view3d: #0f1214;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+img { max-width: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 var(--step-0)/1.6 var(--body);
+  -webkit-font-smoothing: antialiased;
+}
+.wrap {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+a { color: var(--accent-ink); text-underline-offset: 3px; }
+a:hover { color: var(--ink); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+h1, h2, h3 { text-wrap: balance; margin: 0; }
+p { margin: 0; }
+code, kbd, .mono { font-family: var(--mono); }
+.placeholder { font-family: var(--mono); font-size: 0.92em; color: var(--accent-ink); }
+
+/* ---- top bar ---- */
+.topbar { border-bottom: 1px solid var(--rule); }
+.topbar .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: center; justify-content: space-between; padding-block: 14px; }
+.mark { font: 800 0.95rem/1 var(--display); font-stretch: 125%; letter-spacing: 0.04em; text-transform: uppercase; }
+.topbar nav { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: var(--step--1); }
+.topbar nav a { color: var(--ink-2); text-decoration: none; }
+.topbar nav a:hover { color: var(--ink); text-decoration: underline; }
+
+/* ---- hero / nameplate ---- */
+.hero .wrap { padding-block: 32px 24px; display: grid; gap: 14px; }
+.eyebrow { font: 600 var(--step--1)/1.2 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-ink); }
+.hero h1 {
+  font-family: var(--display); font-weight: 900; font-stretch: 125%;
+  font-size: var(--step-4); line-height: 0.95; letter-spacing: -0.01em; text-transform: uppercase;
+}
+.hero .lede { font-size: var(--step-1); max-width: 40em; color: var(--ink-2); }
+.specline { display: flex; flex-wrap: wrap; gap: 6px 0; font: 500 var(--step--1)/1.4 var(--mono); color: var(--ink-2); }
+.specline span { padding-right: 14px; margin-right: 14px; border-right: 1px solid var(--rule); }
+.specline span:last-child { border-right: 0; }
+.specline b { color: var(--ink); font-weight: 600; }
+
+/* ---- demo console ---- */
+.console-wrap { padding-block: 0 40px; }
+.console {
+  display: grid;
+  grid-template-columns: minmax(0, 350px) minmax(0, 1fr);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--sheet);
+  overflow: hidden;
+}
+.panel { padding: 18px; display: flex; flex-direction: column; gap: 14px; border-right: 1px solid var(--rule); min-width: 0; }
+.panel h2 { font: 800 var(--step-1)/1.1 var(--display); font-stretch: 112%; }
+.hint { font-size: 0.95rem; line-height: 1.45; min-height: 2.9em; color: var(--ink); }
+.hint.warn { color: var(--danger); font-weight: 600; }
+.hint.grip { color: var(--grip); font-weight: 600; }
+.hint.ok { color: var(--accent-ink); }
+.status { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font: 500 0.75rem/1 var(--mono); padding: 6px 8px; border-radius: 4px; border: 1px solid var(--rule); color: var(--ink-2); white-space: nowrap; }
+.chip.on { color: var(--ink); border-color: var(--ink-2); }
+.joints { display: grid; gap: 9px; }
+.joint { display: grid; grid-template-columns: 1fr auto auto; gap: 2px 10px; align-items: baseline; font-size: 0.9rem; }
+.joint .what { color: var(--ink); }
+.joint .name { color: var(--ink-2); font-size: 0.78rem; }
+.joint .val { font: 600 0.88rem/1 var(--mono); font-variant-numeric: tabular-nums; min-width: 4.6em; text-align: right; color: var(--accent-ink); }
+.joint .val.grip { color: var(--grip); }
+.joint .val.idle { color: var(--ink-2); }
+.bar { grid-column: 1 / -1; height: 5px; background: var(--rule); border-radius: 3px; overflow: hidden; }
+.bar i { display: block; height: 100%; width: 50%; background: var(--accent); border-radius: 3px; }
+.bar i.grip { background: var(--grip); }
+.view-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.label { font: 600 0.72rem/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); }
+.floor-badge {
+  position: relative; overflow: hidden;
+  font: 700 0.7rem/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--on-danger); background: var(--danger); padding: 7px 8px 5px; border-radius: 3px;
+}
+.floor-badge::before {
+  content: ""; position: absolute; inset: 0 0 auto; height: 3px;
+  background: repeating-linear-gradient(-45deg, var(--on-danger) 0 4px, transparent 4px 8px);
+  opacity: 0.85;
+}
+.view3d {
+  display: block; width: 100%; height: 250px; border-radius: 4px;
+  border: 1px solid var(--rule); background: var(--view3d); cursor: grab; touch-action: none;
+}
+.view3d:active { cursor: grabbing; }
+.caption { font-size: 0.78rem; color: var(--ink-2); }
+.packet { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; font-size: 0.8rem; color: var(--ink-2); border-top: 1px solid var(--rule); padding-top: 10px; }
+.packet code { color: var(--ink); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+.btns { display: flex; flex-wrap: wrap; gap: 8px; }
+button {
+  font: 600 0.9rem/1 var(--body); min-height: 44px; padding: 0 16px; border-radius: 5px; cursor: pointer;
+  border: 1px solid var(--rule); background: var(--paper); color: var(--ink);
+}
+button:hover { border-color: var(--ink-2); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { background: var(--arm-2); border-color: var(--arm-2); }
+button[aria-pressed="true"] { background: var(--grip); border-color: var(--grip); color: #fff; }
+button:disabled { opacity: 0.5; cursor: default; }
+
+.stage-col { display: flex; flex-direction: column; min-width: 0; background: var(--stage); }
+.stage-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 14px; color: var(--stage-dim); font: 500 0.75rem/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; }
+.stage-head .mode { color: var(--stage-ink); }
+.stage { position: relative; width: 100%; flex: 1 1 auto; min-height: 380px; }
+.stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+.stage canvas:focus-visible { outline-offset: -3px; }
+.stage-bar {
+  display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between;
+  padding: 4px 14px 12px; color: var(--stage-ink); border-bottom: 1px solid #262c31;
+}
+.stage-bar p { font-size: 0.88rem; color: var(--stage-dim); max-width: 34em; }
+.stage-bar .btns button:not(.primary):not([aria-pressed="true"]) { background: transparent; color: var(--stage-ink); border-color: #3a434b; }
+.stage-bar .btns button:not(.primary):not([aria-pressed="true"]):hover { border-color: var(--stage-dim); }
+.manual { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; width: 100%; }
+.manual label { display: grid; gap: 4px; font: 500 0.72rem/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--stage-dim); }
+.manual input[type="range"] { width: 150px; accent-color: var(--accent); min-height: 28px; }
+.notice { font-size: 0.85rem; color: var(--stage-ink); background: #2a1416; border: 1px solid #6b2a30; padding: 10px 12px; border-radius: 4px; width: 100%; }
+.privacy { font-size: var(--step--1); color: var(--ink-2); margin-top: 12px; }
+
+/* ---- spec sections ---- */
+.spec { border-top: 1px solid var(--rule); }
+.spec > .wrap { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 16px 40px; padding-block: 48px; }
+.spec-label { display: grid; gap: 8px; align-content: start; }
+.spec-label h2 { font: 800 var(--step-2)/1.1 var(--display); font-stretch: 112%; }
+.spec-body { display: grid; gap: 22px; min-width: 0; }
+.spec-body > p { max-width: 65ch; }
+.muted { color: var(--ink-2); }
+
+.path { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: var(--radius); overflow: hidden; }
+.path li { background: var(--sheet); padding: 16px; display: grid; gap: 6px; align-content: start; }
+.path .n { font: 600 0.75rem/1 var(--mono); color: var(--accent-ink); }
+.path h3 { font: 700 var(--step-0)/1.25 var(--body); }
+.path p { font-size: 0.9rem; color: var(--ink-2); }
+
+.table-box { overflow-x: auto; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--sheet); }
+table { border-collapse: collapse; width: 100%; min-width: 600px; font-size: 0.92rem; }
+th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+th { font: 600 0.72rem/1.2 var(--mono); letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-2); }
+td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+.block { display: grid; gap: 10px; align-content: start; min-width: 0; }
+.block h3 { font: 700 var(--step-1)/1.25 var(--body); }
+.block ul { margin: 0; padding-left: 1.1em; display: grid; gap: 6px; }
+.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 18px; margin: 0; font-size: 0.92rem; }
+.facts dt { font-family: var(--mono); color: var(--ink-2); }
+.facts dd { margin: 0; }
+.phrases { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 0.9rem; }
+.phrases li { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 10px; }
+.phrases code { color: var(--ink-2); font-size: 0.8rem; padding-top: 2px; }
+
+pre { margin: 0; overflow-x: auto; background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--radius); padding: 14px 16px; font: 400 0.85rem/1.6 var(--mono); }
+pre .c { color: var(--ink-2); }
+
+footer { border-top: 1px solid var(--rule); }
+footer .wrap { padding-block: 28px 40px; display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; font-size: var(--step--1); color: var(--ink-2); }
+
+@media (max-width: 880px) {
+  .console { grid-template-columns: minmax(0, 1fr); }
+  .stage-col { order: -1; }
+  .stage { flex: none; min-height: 0; aspect-ratio: 4 / 3; max-width: 100%; }
+  .panel { border-right: 0; border-top: 1px solid var(--rule); }
+  .spec > .wrap { grid-template-columns: minmax(0, 1fr); padding-block: 36px; }
+  .path { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .path, .cols { grid-template-columns: minmax(0, 1fr); }
+  .manual input[type="range"] { width: 120px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { scroll-behavior: auto !important; }
+}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap">
+    <span class="mark">Hand-Controlled Robot Arm</span>
+    <nav aria-label="Sections">
+      <a href="#demo">Live demo</a>
+      <a href="#signal-path">How it works</a>
+      <a href="#safety">Safety</a>
+      <a href="#hardware">Hardware</a>
+      <a href="#run-it">Run it</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero" aria-labelledby="title">
+    <div class="wrap">
+      <p class="eyebrow">Hackathon build · 24 hours · solo</p>
+      <h1 id="title">Hand-Controlled Robot Arm</h1>
+      <p class="lede">Move your hand in front of a camera and the robot arm moves with you. Make a fist and the gripper closes. No gloves, no controller: just a webcam, hand tracking and an Arduino.</p>
+      <p class="specline">
+        <span><b>5</b> servos</span>
+        <span><b>21</b> hand landmarks per frame</span>
+        <span><b>30</b> commands / s</span>
+        <span><b>115200</b> baud</span>
+        <span><b>1.5 cm</b> floor clearance</span>
+      </p>
+    </div>
+  </section>
+
+  <section class="console-wrap" id="demo" aria-label="Live demo">
+    <div class="wrap">
+      <div class="console" id="console">
+        <div class="panel">
+          <div class="status">
+            <span class="chip" id="chip-hand">Hand: --</span>
+            <span class="chip" id="chip-arm">Arm: not connected</span>
+          </div>
+          <h2>Directions</h2>
+          <p class="hint" id="hint" aria-live="polite">Sample motion. Start the camera or use your mouse to take control.</p>
+
+          <div class="joints" id="joints">
+            <div class="joint" data-j="base"><span class="what">Move left / right</span><span class="name">Base</span><span class="val">90°</span><span class="bar"><i></i></span></div>
+            <div class="joint" data-j="shoulder"><span class="what">Move up / down</span><span class="name">Shoulder</span><span class="val">90°</span><span class="bar"><i></i></span></div>
+            <div class="joint" data-j="elbow"><span class="what">Closer / farther</span><span class="name">Elbow</span><span class="val">90°</span><span class="bar"><i></i></span></div>
+            <div class="joint" data-j="wrist"><span class="what">Tilt your hand</span><span class="name">Wrist</span><span class="val">90°</span><span class="bar"><i></i></span></div>
+            <div class="joint" data-j="gripper"><span class="what">Make a fist to grab</span><span class="name">Gripper</span><span class="val">OPEN</span><span class="bar"><i></i></span></div>
+          </div>
+
+          <div class="view-head">
+            <span class="label">Arm model (3D)</span>
+            <span class="floor-badge" id="floor-badge" hidden>Floor limit</span>
+          </div>
+          <canvas class="view3d" id="view3d" role="img" aria-label="3D model of the robot arm showing its current pose"></canvas>
+          <p class="caption">Drag to rotate. Double-click to reset the view.</p>
+
+          <div class="btns">
+            <button type="button" id="btn-pause">Pause</button>
+            <button type="button" id="btn-home">Home</button>
+            <button type="button" id="btn-serial">Connect arm (USB)</button>
+          </div>
+          <p class="packet"><span>Serial packet</span><code id="packet">&lt;90,95,89,90,30&gt;</code></p>
+        </div>
+
+        <div class="stage-col">
+          <div class="stage-head">
+            <span class="mode" id="mode-label">Sample motion</span>
+            <span id="fps"></span>
+          </div>
+          <div class="stage-bar" id="stage-bar">
+            <p id="stage-text">Your webcam stays in your browser. Frames are never uploaded.</p>
+            <div class="btns" id="start-btns">
+              <button type="button" class="primary" id="btn-camera">Start camera</button>
+              <button type="button" id="btn-mouse">Use mouse or touch</button>
+            </div>
+            <div class="manual" id="manual" hidden>
+              <label for="reach">Closer / farther<input type="range" id="reach" min="0.08" max="0.25" step="0.005" value="0.15"></label>
+              <label for="tilt">Tilt<input type="range" id="tilt" min="-60" max="60" step="1" value="0"></label>
+              <button type="button" id="btn-grip" aria-pressed="false">Grip</button>
+              <button type="button" id="btn-camera-2">Start camera</button>
+            </div>
+            <p class="notice" id="notice" hidden></p>
+          <div class="stage">
+            <canvas id="stage" tabindex="0" aria-label="Hand view. In mouse mode, move the pointer here to steer the arm; arrow keys also work."></canvas>
+          </div>
+          </div>
+        </div>
+      </div>
+      <p class="privacy">Hand tracking runs on your device with Google MediaPipe. The arm connection uses Web Serial, available in Chrome and Edge on desktop.</p>
+    </div>
+  </section>
+
+  <section class="spec" id="signal-path" aria-labelledby="h-path">
+    <div class="wrap">
+      <div class="spec-label"><span class="label">Signal path</span><h2 id="h-path">From your hand to a servo</h2></div>
+      <div class="spec-body">
+        <p>Every camera frame goes through the same six steps. The Python app and the demo above share the same numbers, so what you see in the browser is how the real arm behaves.</p>
+        <ol class="path">
+          <li><span class="n">1</span><h3>Camera</h3><p>A webcam or Raspberry Pi camera at 640×480 (320×240 on a Pi). The image is mirrored so it feels like a reflection.</p></li>
+          <li><span class="n">2</span><h3>Hand landmarks</h3><p>MediaPipe finds 21 points on one hand: the wrist, each knuckle and each fingertip.</p></li>
+          <li><span class="n">3</span><h3>Measurements</h3><p>Palm position, palm size (how close you are), knuckle-line tilt, and how far the fingertips reach from the wrist.</p></li>
+          <li><span class="n">4</span><h3>Joint angles</h3><p>Each measurement maps onto one servo's range, then a moving average smooths out jitter.</p></li>
+          <li><span class="n">5</span><h3>Floor limit</h3><p>The pose is checked against the arm's real dimensions and raised if any part would touch the floor.</p></li>
+          <li><span class="n">6</span><h3>Arduino</h3><p>Angles go over USB as <code>&lt;b,s,e,w,g&gt;</code>. The Arduino eases each servo toward its target at 2° per 15 ms.</p></li>
+        </ol>
+        <div class="table-box">
+          <table>
+            <thead><tr><th scope="col">Your hand</th><th scope="col">Arm joint</th><th scope="col">How it's measured</th><th scope="col">Servo range</th></tr></thead>
+            <tbody>
+              <tr><td>Move left / right</td><td>Base turns</td><td>Palm x across the frame</td><td class="num">20°–160°</td></tr>
+              <tr><td>Move up / down</td><td>Shoulder lifts</td><td>Palm y down the frame</td><td class="num">40°–140°</td></tr>
+              <tr><td>Move closer / farther</td><td>Elbow reaches</td><td>Palm size, wrist to middle knuckle</td><td class="num">40°–140°</td></tr>
+              <tr><td>Tilt your hand</td><td>Wrist rotates</td><td>Angle of the knuckle line, ±60°</td><td class="num">30°–150°</td></tr>
+              <tr><td>Make a fist</td><td>Gripper closes</td><td>Fingertip reach ÷ palm size, below 1.15 to close, above 1.40 to open</td><td class="num">30° / 100°</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="muted">If your hand leaves the frame, nothing is sent and the arm holds its last position.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="spec" id="safety" aria-labelledby="h-safety">
+    <div class="wrap">
+      <div class="spec-label"><span class="label">Safety</span><h2 id="h-safety">The arm never touches the floor</h2></div>
+      <div class="spec-body">
+        <p>Before any command is sent, the software works out where the elbow, wrist and gripper tips would be, using the arm's measured lengths. If any of them would come within 1.5 cm of the floor, the pose is raised just enough to clear it.</p>
+        <div class="cols">
+          <div class="block">
+            <h3>Stop and slide</h3>
+            <p>The elbow bends up first. If the elbow joint itself would hit the floor, the shoulder lifts and then the elbow is corrected. Each correction is the smallest one that works, so pushing your hand down makes the arm stop at the floor and slide along it instead of jumping.</p>
+          </div>
+          <div class="block">
+            <h3>Tested, not assumed</h3>
+            <ul>
+              <li>11,025 poses checked: none below the floor, none outside a servo limit.</li>
+              <li>About 0.2 ms per check, fast enough for every frame.</li>
+              <li>The Arduino also clamps every angle to hard limits, as a second layer.</li>
+            </ul>
+          </div>
+        </div>
+        <p class="muted">Try it above: in mouse mode, move to the bottom of the pad and set the distance to “farther”. The badge turns on and the model shows where the arm is closest to the floor.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="spec" id="hardware" aria-labelledby="h-hw">
+    <div class="wrap">
+      <div class="spec-label"><span class="label">Hardware &amp; software</span><h2 id="h-hw">What it's built from</h2></div>
+      <div class="spec-body">
+        <div class="cols">
+          <div class="block">
+            <h3>Hardware</h3>
+            <ul>
+              <li>Pre-built 5-servo robot arm (base, shoulder, elbow, wrist, gripper)</li>
+              <li>Arduino, receiving packets over USB serial</li>
+              <li>Laptop, or a Raspberry Pi running headless</li>
+              <li>Webcam or Raspberry Pi Camera Module</li>
+              <li>Separate 5–6 V supply for the servos, sharing ground with the Arduino</li>
+            </ul>
+          </div>
+          <div class="block">
+            <h3>Software</h3>
+            <ul>
+              <li>Python, MediaPipe Hand Landmarker, OpenCV</li>
+              <li>Tkinter desktop app with a hand-drawn 3D arm view</li>
+              <li>pyserial and an Arduino sketch with per-servo limits and easing</li>
+              <li>This page: MediaPipe for the web, Canvas 2D, Web Serial</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="spec" id="run-it" aria-labelledby="h-run">
+    <div class="wrap">
+      <div class="spec-label"><span class="label">Run it</span><h2 id="h-run">Set up in three steps</h2></div>
+      <div class="spec-body">
+        <pre><code><span class="c"># 1. Upload arm_receiver/arm_receiver.ino to the Arduino</span>
+pip install mediapipe opencv-python pyserial pillow   <span class="c"># 2. install</span>
+python3 arm_gui.py                                    <span class="c"># 3. run (add --headless on a Pi)</span></code></pre>
+        <p class="muted">Source code: <span class="placeholder">[GITHUB LINK]</span></p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Built by <span class="placeholder">[YOUR NAME]</span> at <span class="placeholder">[HACKATHON NAME]</span>, October 2026.</span>
+    <span>Hand tracking by Google MediaPipe</span>
+  </div>
+</footer>
+
+<video id="video" playsinline muted hidden></video>
+
+<script>
+"use strict";
+/* ==========================================================================
+   Same configuration and logic as hand_control.py, ported to JavaScript.
+   ========================================================================== */
+const SERVOS = {               // [min, max, home, invert]
+  base: [20, 160, 90, false],
+  shoulder: [40, 140, 90, false],
+  elbow: [40, 140, 90, false],
+  wrist: [30, 150, 90, false],
+  gripper: [30, 100, 30, false],
+};
+const JOINTS = ["base", "shoulder", "elbow", "wrist", "gripper"];
+const X_RANGE = [0.15, 0.85], Y_RANGE = [0.15, 0.85], SIZE_RANGE = [0.08, 0.25], ROLL_RANGE = [-60, 60];
+const FIST_CLOSE_BELOW = 1.15, FIST_OPEN_ABOVE = 1.40;
+const SMOOTHING = 0.35, DEADBAND_DEG = 1.5, SEND_HZ = 30;
+const ARM_GEOMETRY = { shoulder_height: 7.0, upper_arm: 15.0, forearm: 13.0, gripper: 6.0, gripper_half_width: 2.5 };
+const FLOOR_MARGIN_CM = 1.5;
+const SHOULDER_LEVEL_AT = 45, SHOULDER_DIR = 1, ELBOW_STRAIGHT_AT = 150, ELBOW_DIR = 1, WRIST_LEVEL_AT = 90;
+const WRIST = 0, INDEX_MCP = 5, MIDDLE_MCP = 9, PINKY_MCP = 17, FINGER_TIPS = [8, 12, 16, 20];
+const HAND_CONNECTIONS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
+  [9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+
+const rad = (d) => d * Math.PI / 180, deg = (r) => r * 180 / Math.PI;
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const homeAngles = () => Object.fromEntries(JOINTS.map((j) => [j, SERVOS[j][2]]));
+
+function remap(value, inRange, servo, flip = false) {
+  let t = (value - inRange[0]) / (inRange[1] - inRange[0]);
+  t = Math.max(0, Math.min(1, t));
+  if (flip) t = 1 - t;
+  const [mn, mx, , invert] = SERVOS[servo];
+  if (invert) t = 1 - t;
+  return mn + t * (mx - mn);
+}
+
+function handFeatures(lm) {
+  const palm = lm[MIDDLE_MCP];
+  const palmSize = dist(lm[WRIST], palm);
+  const reach = FINGER_TIPS.reduce((s, i) => s + dist(lm[WRIST], lm[i]), 0) / FINGER_TIPS.length;
+  const openness = palmSize > 1e-6 ? reach / palmSize : 0;
+  let roll = deg(Math.atan2(lm[PINKY_MCP].y - lm[INDEX_MCP].y, lm[PINKY_MCP].x - lm[INDEX_MCP].x));
+  if (roll > 90) roll -= 180; else if (roll < -90) roll += 180;
+  return { x: palm.x, y: palm.y, size: palmSize, openness, roll };
+}
+
+class FistDetector {
+  constructor() { this.closed = false; }
+  update(openness) {
+    if (this.closed && openness > FIST_OPEN_ABOVE) this.closed = false;
+    else if (!this.closed && openness < FIST_CLOSE_BELOW) this.closed = true;
+    return this.closed;
+  }
+}
+
+function featuresToTargets(f, fist) {
+  const [gMin, gMax, , gInv] = SERVOS.gripper;
+  let grip = fist ? gMax : gMin;
+  if (gInv) grip = fist ? gMin : gMax;
+  return {
+    base: remap(f.x, X_RANGE, "base"),
+    shoulder: remap(f.y, Y_RANGE, "shoulder", true),
+    elbow: remap(f.size, SIZE_RANGE, "elbow"),
+    wrist: remap(f.roll, ROLL_RANGE, "wrist"),
+    gripper: grip,
+  };
+}
+
+class Smoother {
+  constructor(alpha = SMOOTHING) { this.alpha = alpha; this.state = homeAngles(); }
+  update(t) {
+    for (const j of JOINTS) {
+      if (j === "gripper") this.state[j] = t[j];
+      else this.state[j] += this.alpha * (t[j] - this.state[j]);
+    }
+    return { ...this.state };
+  }
+  reset() { this.state = homeAngles(); }
+}
+
+/* ---- kinematics + floor boundary ---- */
+function armKinematics(a) {
+  const g = ARM_GEOMETRY;
+  const th = rad(a.base - 90);
+  const e1 = rad(SHOULDER_DIR * (a.shoulder - SHOULDER_LEVEL_AT));
+  const e2 = e1 - rad(ELBOW_DIR * (ELBOW_STRAIGHT_AT - a.elbow));
+  const roll = rad(a.wrist - WRIST_LEVEL_AT);
+  const fx = Math.sin(th), fy = Math.cos(th);
+  const along = (p, elev, len) => {
+    const c = Math.cos(elev) * len;
+    return [p[0] + c * fx, p[1] + c * fy, p[2] + Math.sin(elev) * len];
+  };
+  const S = [0, 0, g.shoulder_height];
+  const E = along(S, e1, g.upper_arm);
+  const W = along(E, e2, g.forearm);
+  const T = along(W, e2, g.gripper);
+  return { th, e1, e2, roll, S, E, W, T };
+}
+
+function floorClearance(a) {
+  const k = armKinematics(a);
+  const spread = ARM_GEOMETRY.gripper_half_width * Math.abs(Math.sin(k.roll) * Math.cos(k.e2));
+  return Math.min(k.E[2], k.W[2] - spread, k.T[2] - spread);
+}
+const isSafe = (a) => floorClearance(a) >= FLOOR_MARGIN_CM;
+
+function nearestSafe(a, joint, step = 0.5) {
+  const [mn, mx] = SERVOS[joint];
+  const start = a[joint];
+  const trial = { ...a };
+  const n = Math.floor((mx - mn) / step) + 2;
+  for (let i = 1; i < n; i++) {
+    for (const v of [start + i * step, start - i * step]) {
+      if (v >= mn && v <= mx) {
+        trial[joint] = v;
+        if (isSafe(trial)) return [Math.abs(v - start), { ...trial }];
+      }
+    }
+  }
+  return null;
+}
+
+function enforceFloor(a) {
+  if (isSafe(a)) return [{ ...a }, false];
+  let fix = nearestSafe(a, "elbow");
+  if (fix) return [fix[1], true];
+  const [mn, mx] = SERVOS.shoulder;
+  const start = a.shoulder, trial = { ...a }, step = 0.5;
+  const n = Math.floor((mx - mn) / step) + 2;
+  for (let i = 1; i < n; i++) {
+    for (const v of [start + i * step, start - i * step]) {
+      if (v >= mn && v <= mx) {
+        trial.shoulder = v;
+        if (armKinematics(trial).E[2] >= FLOOR_MARGIN_CM) {
+          fix = isSafe(trial) ? [0, { ...trial }] : nearestSafe(trial, "elbow");
+          if (fix) return [fix[1], true];
+        }
+      }
+    }
+  }
+  let best = null, bestC = -Infinity;
+  for (let s = mn; s <= mx; s += 2) {
+    for (let e = SERVOS.elbow[0]; e <= SERVOS.elbow[1]; e += 2) {
+      const c = floorClearance({ ...a, shoulder: s, elbow: e });
+      if (c > bestC) { bestC = c; best = { ...a, shoulder: s, elbow: e }; }
+    }
+  }
+  return [best, true];
+}
+
+const encodePacket = (a) => "<" + JOINTS.map((j) => Math.round(a[j])).join(",") + ">\n";
+
+/* ==========================================================================
+   3D arm view: perspective projection + painter's algorithm on Canvas 2D,
+   the same model as the desktop app.
+   ========================================================================== */
+const V = {
+  add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
+  sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+  mul: (a, k) => [a[0] * k, a[1] * k, a[2] * k],
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+  cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+  norm: (a) => { const n = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / n, a[1] / n, a[2] / n]; },
+};
+
+function readPalette() {
+  const cs = getComputedStyle(document.documentElement);
+  const g = (n) => cs.getPropertyValue(n).trim();
+  return {
+    arm: g("--arm"), arm2: g("--arm-2"), base: g("--base3d"), turn: g("--turn3d"), bracket: g("--bracket3d"),
+    joint: g("--joint3d"), jaw: g("--jaw3d"), palm: g("--palm3d"), floor: g("--floor3d"), grid: g("--grid3d"),
+    shadow: g("--shadow3d"), grip: g("--grip"), danger: g("--danger"),
+  };
+}
+function shade(hex, k) {
+  const h = hex.replace("#", "");
+  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  const c = [0, 2, 4].map((i) => Math.max(0, Math.min(255, Math.round(parseInt(full.slice(i, i + 2), 16) * k))));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+class Arm3D {
+  constructor(canvas) {
+    this.c = canvas;
+    this.HOME_VIEW = [35, 24, 7.2];
+    [this.yaw, this.pitch, this.dist] = this.HOME_VIEW;
+    this.angles = homeAngles();
+    this.fist = false; this.floor = false;
+    this.palette = readPalette();
+    this.key = "";
+    this.LIGHT = V.norm([-0.45, -0.55, 0.85]);
+    let drag = null;
+    canvas.addEventListener("pointerdown", (e) => { drag = [e.clientX, e.clientY]; canvas.setPointerCapture(e.pointerId); });
+    canvas.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      const dx = e.clientX - drag[0], dy = e.clientY - drag[1];
+      drag = [e.clientX, e.clientY];
+      this.yaw = (this.yaw - dx * 0.5 + 360) % 360;
+      this.pitch = Math.max(5, Math.min(85, this.pitch + dy * 0.4));
+      this.redraw();
+    });
+    const end = () => { drag = null; };
+    canvas.addEventListener("pointerup", end);
+    canvas.addEventListener("pointercancel", end);
+    canvas.addEventListener("dblclick", () => { [this.yaw, this.pitch, this.dist] = this.HOME_VIEW; this.redraw(); });
+    new ResizeObserver(() => this.redraw()).observe(canvas);
+  }
+  setPose(a, fist, floor) {
+    const key = JOINTS.map((j) => a[j].toFixed(1)).join(",") + fist + floor;
+    if (key === this.key) return;
+    this.key = key; this.angles = { ...a }; this.fist = fist; this.floor = floor;
+    this.redraw();
+  }
+  refreshPalette() { this.palette = readPalette(); this.redraw(); }
+  camera(w, h) {
+    const yaw = rad(this.yaw), pitch = rad(this.pitch), d = this.dist;
+    const target = [0, 0.8, 0.9];
+    this.eye = [target[0] + d * Math.cos(pitch) * Math.sin(yaw),
+                target[1] - d * Math.cos(pitch) * Math.cos(yaw),
+                target[2] + d * Math.sin(pitch)];
+    this.cf = V.norm(V.sub(target, this.eye));
+    this.cr = V.norm(V.cross(this.cf, [0, 0, 1]));
+    this.cu = V.cross(this.cr, this.cf);
+    this.focal = Math.min(w * 1.3, h * 1.8);
+    this.cx = w / 2; this.cy = h * 0.54;
+  }
+  project(p) {
+    const v = V.sub(p, this.eye);
+    const z = Math.max(0.1, V.dot(v, this.cf));
+    return [this.cx + this.focal * V.dot(v, this.cr) / z, this.cy - this.focal * V.dot(v, this.cu) / z, z];
+  }
+  face(prims, pts, normal, color) {
+    let c = [0, 0, 0];
+    for (const p of pts) c = V.add(c, p);
+    c = V.mul(c, 1 / pts.length);
+    if (V.dot(normal, V.sub(this.eye, c)) <= 0) return;
+    const k = 0.42 + 0.78 * Math.max(0, V.dot(normal, this.LIGHT));
+    const proj = pts.map((p) => this.project(p));
+    const depth = proj.reduce((s, q) => s + q[2], 0) / proj.length;
+    prims.push({ d: depth, kind: "poly", pts: proj, fill: shade(color, k), stroke: shade(color, k * 0.7) });
+  }
+  box(prims, p, q, s, n, hw, hh, color, segments = 1) {
+    const u = V.norm(V.sub(q, p));
+    const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+    const ring = (c) => corners.map(([i, j]) => V.add(c, V.add(V.mul(s, i * hw), V.mul(n, j * hh))));
+    const steps = [];
+    for (let t = 0; t <= segments; t++) steps.push(V.add(p, V.mul(V.sub(q, p), t / segments)));
+    for (let k = 0; k < segments; k++) {
+      const ra = ring(steps[k]), rb = ring(steps[k + 1]);
+      for (let m = 0; m < 4; m++) {
+        const [i0, j0] = corners[m], [i1, j1] = corners[(m + 1) % 4];
+        const normal = V.norm(V.add(V.mul(s, i0 + i1), V.mul(n, j0 + j1)));
+        this.face(prims, [ra[m], ra[(m + 1) % 4], rb[(m + 1) % 4], rb[m]], normal, color);
+      }
+    }
+    this.face(prims, ring(p).reverse(), V.mul(u, -1), color);
+    this.face(prims, ring(q), u, color);
+  }
+  cylinder(prims, z0, z1, r, color, sides = 22) {
+    const ring = [];
+    for (let i = 0; i < sides; i++) ring.push([r * Math.cos(2 * Math.PI * i / sides), r * Math.sin(2 * Math.PI * i / sides)]);
+    for (let i = 0; i < sides; i++) {
+      const [x0, y0] = ring[i], [x1, y1] = ring[(i + 1) % sides];
+      const mid = 2 * Math.PI * (i + 0.5) / sides;
+      this.face(prims, [[x0, y0, z0], [x1, y1, z0], [x1, y1, z1], [x0, y0, z1]], [Math.cos(mid), Math.sin(mid), 0], color);
+    }
+    this.face(prims, ring.map(([x, y]) => [x, y, z1]), [0, 0, 1], color);
+  }
+  sphere(prims, c, r, color) {
+    const [x, y, z] = this.project(c);
+    prims.push({ d: z - r, kind: "ball", x, y, r: this.focal * r / z, fill: color });
+  }
+  redraw() {
+    const c = this.c, dpr = window.devicePixelRatio || 1;
+    const w = c.clientWidth, h = c.clientHeight;
+    if (w < 20 || h < 20) return;
+    if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+      c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+    }
+    const ctx = c.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    this.camera(w, h);
+    const P = this.palette, a = this.angles, SCALE = 0.1;
+    const BASE_R = 0.55, BASE_H = 0.30, TURN_R = 0.42, TURN_H = 0.10;
+
+    const k = armKinematics(a);
+    const fwd = [Math.sin(k.th), Math.cos(k.th), 0], side = [Math.cos(k.th), -Math.sin(k.th), 0];
+    const d1 = [Math.cos(k.e1) * fwd[0], Math.cos(k.e1) * fwd[1], Math.sin(k.e1)];
+    const d2 = [Math.cos(k.e2) * fwd[0], Math.cos(k.e2) * fwd[1], Math.sin(k.e2)];
+    const S = V.mul(k.S, SCALE), E = V.mul(k.E, SCALE), W = V.mul(k.W, SCALE);
+    const gripLen = ARM_GEOMETRY.gripper * SCALE, halfW = ARM_GEOMETRY.gripper_half_width * SCALE;
+    const n2 = V.cross(side, d2);
+    const gs = V.add(V.mul(side, Math.cos(k.roll)), V.mul(n2, Math.sin(k.roll)));
+    const gn = V.add(V.mul(side, -Math.sin(k.roll)), V.mul(n2, Math.cos(k.roll)));
+    const [gMin, gMax, , gInv] = SERVOS.gripper;
+    let closed = (a.gripper - gMin) / ((gMax - gMin) || 1);
+    if (gInv) closed = 1 - closed;
+    const openGap = Math.max(0.06, halfW - 0.045);
+    const gap = 0.05 + (openGap - 0.05) * (1 - Math.max(0, Math.min(1, closed)));
+    const palmEnd = V.add(W, V.mul(d2, gripLen * 0.35));
+    const fingers = [-1, 1].map((sg) => {
+      const root = V.add(palmEnd, V.mul(gs, sg * gap));
+      return [root, V.add(root, V.mul(d2, gripLen * 0.65))];
+    });
+
+    const poly = (pts, fill, stroke, lw = 1) => {
+      ctx.beginPath();
+      pts.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+      ctx.closePath();
+      if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+      if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); }
+    };
+    const line = (p, q, color, lw, cap = "butt") => {
+      ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]);
+      ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.lineCap = cap; ctx.stroke();
+    };
+
+    // Floor, grid and shadow sit underneath everything else.
+    const [x0, x1, y0, y1] = [-3, 3, -1.5, 3.5];
+    poly([[x0, y0, 0], [x1, y0, 0], [x1, y1, 0], [x0, y1, 0]].map((p) => this.project(p)), P.floor,
+         this.floor ? P.danger : null, 2);
+    const steps = 12;
+    for (let i = 0; i <= steps; i++) {
+      const gx = x0 + (x1 - x0) * i / steps, gy = y0 + (y1 - y0) * i / steps;
+      line(this.project([gx, y0, 0]), this.project([gx, y1, 0]), P.grid, 1);
+      line(this.project([x0, gy, 0]), this.project([x1, gy, 0]), P.grid, 1);
+    }
+    const flat = (p) => [p[0], p[1], 0];
+    for (const [p, q, r] of [[S, E, 0.13], [E, W, 0.11], [W, palmEnd, 0.12], [...fingers[0], 0.05], [...fingers[1], 0.05]]) {
+      const a2 = this.project(flat(p)), b2 = this.project(flat(q));
+      line(a2, b2, P.shadow, Math.max(2, this.focal * 2 * r / ((a2[2] + b2[2]) / 2)), "round");
+    }
+    if (this.floor) {
+      const pts = [E, W, ...fingers.map((f) => f[1]), ...fingers.map((f) => f[0])];
+      const low = pts.reduce((m, p) => (p[2] < m[2] ? p : m));
+      for (const r of [0.32, 0.18]) {
+        const ring = [];
+        for (let i = 0; i < 28; i++) {
+          const t = 2 * Math.PI * i / 28;
+          ring.push(this.project([low[0] + r * Math.cos(t), low[1] + r * Math.sin(t), 0]));
+        }
+        poly(ring, null, P.danger, 2);
+      }
+    }
+
+    const prims = [];
+    this.cylinder(prims, 0, BASE_H, BASE_R, P.base);
+    this.cylinder(prims, BASE_H, BASE_H + TURN_H, TURN_R, P.turn);
+    for (const sg of [-1, 1]) {
+      const off = V.mul(side, sg * 0.24);
+      this.box(prims, V.add([0, 0, BASE_H + TURN_H], off),
+               V.add([0, 0, Math.max(S[2] + 0.12, BASE_H + TURN_H + 0.1)], off), side, fwd, 0.04, 0.18, P.bracket);
+    }
+    this.box(prims, S, E, side, V.cross(side, d1), 0.13, 0.11, P.arm, 3);
+    this.box(prims, E, W, side, n2, 0.11, 0.09, P.arm2, 3);
+    this.box(prims, W, palmEnd, gs, gn, gap + 0.06, 0.08, P.palm);
+    for (const [root, tip] of fingers) this.box(prims, root, tip, gs, gn, 0.045, 0.075, this.fist ? P.grip : P.jaw);
+    this.sphere(prims, S, 0.17, P.joint);
+    this.sphere(prims, E, 0.15, P.joint);
+    this.sphere(prims, W, 0.12, P.joint);
+
+    prims.sort((p, q) => q.d - p.d);
+    for (const p of prims) {
+      if (p.kind === "poly") poly(p.pts, p.fill, p.stroke, 1);
+      else {
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 2 * Math.PI);
+        ctx.fillStyle = shade(p.fill, 0.75); ctx.fill();
+        ctx.strokeStyle = shade(p.fill, 0.45); ctx.lineWidth = 1; ctx.stroke();
+        ctx.beginPath(); ctx.ellipse(p.x - p.r * 0.2, p.y - p.r * 0.28, p.r * 0.35, p.r * 0.32, 0, 0, 2 * Math.PI);
+        ctx.fillStyle = p.fill; ctx.fill();
+      }
+    }
+  }
+}
+
+/* ==========================================================================
+   Demo controller: camera / mouse / sample motion -> same pipeline as the app
+   ========================================================================== */
+const VISION_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+const WASM_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+
+const $ = (id) => document.getElementById(id);
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+const demo = {
+  mode: "sample",                 // sample | camera | mouse
+  paused: false,
+  smoother: new Smoother(),
+  fist: new FistDetector(),
+  angles: homeAngles(),
+  floorLimited: false,
+  features: null,
+  landmarks: null,
+  pointer: { x: 0.5, y: 0.45, grip: false, held: false },
+  landmarker: null,
+  stream: null,
+  lastVideoTime: -1,
+  fps: 0, frames: 0, fpsT: performance.now(),
+  serial: { port: null, writer: null, ready: false, last: null, lastT: 0 },
+  packet: "",
+};
+const arm3d = new Arm3D($("view3d"));
+
+function processFeatures(feats) {
+  demo.features = feats;
+  if (!feats) return;
+  demo.fist.update(feats.openness);
+  if (demo.paused) return;
+  const smoothed = demo.smoother.update(featuresToTargets(feats, demo.fist.closed));
+  [demo.angles, demo.floorLimited] = enforceFloor(smoothed);
+  sendToArm(demo.angles);
+}
+
+/* ---- sample motion (before the viewer takes control) ---- */
+function sampleFeatures(t) {
+  const fist = Math.floor(t / 2.6) % 3 === 2;
+  const dip = Math.max(0, Math.sin(t * 0.23 - 1.2));       // slowly dips toward the floor
+  return {
+    x: 0.5 + 0.28 * Math.sin(t * 0.55),
+    y: 0.45 + 0.18 * Math.sin(t * 0.37) + 0.35 * dip * dip,
+    size: 0.15 + 0.05 * Math.sin(t * 0.29) - 0.06 * dip,
+    roll: 30 * Math.sin(t * 0.41),
+    openness: fist ? 0.9 : 1.9,
+  };
+}
+
+/* ---- mouse / touch ---- */
+function pointerFeatures() {
+  const p = demo.pointer;
+  return { x: p.x, y: p.y, size: parseFloat($("reach").value), roll: parseFloat($("tilt").value),
+           openness: (p.grip || p.held) ? 0.9 : 1.9 };
+}
+const stageCanvas = $("stage");
+stageCanvas.addEventListener("pointerdown", (e) => {
+  if (demo.mode === "sample") setMode("mouse");
+  if (demo.mode !== "mouse") return;
+  stageCanvas.setPointerCapture(e.pointerId);
+  setPointer(e);
+  if (e.pointerType === "mouse") demo.pointer.held = true;
+});
+stageCanvas.addEventListener("pointermove", (e) => {
+  if (demo.mode !== "mouse") return;
+  if (e.pointerType === "mouse" || e.buttons) setPointer(e);
+});
+const release = () => { demo.pointer.held = false; };
+stageCanvas.addEventListener("pointerup", release);
+stageCanvas.addEventListener("pointercancel", release);
+stageCanvas.addEventListener("keydown", (e) => {
+  if (demo.mode !== "mouse") return;
+  const d = 0.03, p = demo.pointer;
+  const moves = { ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, -d], ArrowDown: [0, d] };
+  if (moves[e.key]) {
+    p.x = Math.max(0, Math.min(1, p.x + moves[e.key][0]));
+    p.y = Math.max(0, Math.min(1, p.y + moves[e.key][1]));
+    e.preventDefault();
+  }
+});
+function setPointer(e) {
+  const r = stageCanvas.getBoundingClientRect();
+  demo.pointer.x = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+  demo.pointer.y = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
+}
+
+/* ---- camera + MediaPipe ---- */
+async function loadLandmarker() {
+  if (demo.landmarker) return demo.landmarker;
+  const { FilesetResolver, HandLandmarker } = await import(VISION_URL);
+  const fileset = await FilesetResolver.forVisionTasks(WASM_URL);
+  const opts = (delegate) => ({
+    baseOptions: { modelAssetPath: MODEL_URL, delegate },
+    runningMode: "VIDEO", numHands: 1,
+    minHandDetectionConfidence: 0.6, minHandPresenceConfidence: 0.6, minTrackingConfidence: 0.5,
+  });
+  try { demo.landmarker = await HandLandmarker.createFromOptions(fileset, opts("GPU")); }
+  catch (_) { demo.landmarker = await HandLandmarker.createFromOptions(fileset, opts("CPU")); }
+  return demo.landmarker;
+}
+
+async function startCamera() {
+  hideNotice();
+  setBusy(true, "Starting camera and loading the hand model…");
+  try {
+    if (!navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error("no camera API"), { name: "NoApi" });
+    const camera = navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" }, audio: false });
+    const [stream] = await Promise.all([camera, loadLandmarker().catch((e) => { throw Object.assign(e, { model: true }); })]);
+    demo.stream = stream;
+    const video = $("video");
+    video.srcObject = stream;
+    await video.play();
+    demo.lastVideoTime = -1;
+    setMode("camera");
+  } catch (e) {
+    stopCamera();
+    showNotice(cameraError(e));
+    setMode("mouse");
+  } finally {
+    setBusy(false);
+  }
+}
+function cameraError(e) {
+  if (e.model) return "The hand-tracking model couldn't load. It downloads from Google and the jsDelivr CDN, so check your connection. You can steer with the mouse meanwhile.";
+  if (e.name === "NotAllowedError" || e.name === "SecurityError")
+    return "Camera access is blocked. Allow the camera for this site in your browser's address bar, then press Start camera again. Pages viewed inside some apps can't use the camera at all; open the page in a regular browser tab.";
+  if (e.name === "NotFoundError" || e.name === "OverconstrainedError") return "No camera was found. Plug in a webcam, or steer with the mouse.";
+  if (e.name === "NotReadableError") return "The camera is busy in another app. Close that app and try again.";
+  if (e.name === "NoApi") return "This browser can't use the camera here. The camera needs a secure page (https or localhost).";
+  return "The camera couldn't start (" + (e.message || e.name) + "). You can steer with the mouse.";
+}
+function stopCamera() {
+  if (demo.stream) demo.stream.getTracks().forEach((t) => t.stop());
+  demo.stream = null;
+}
+
+/* ---- Web Serial: drive the real arm, same packets as the Python app ---- */
+async function toggleSerial() {
+  const s = demo.serial;
+  if (s.port) { await closeSerial(); return; }
+  if (!("serial" in navigator)) {
+    showNotice("Connecting the arm needs Web Serial: use Chrome or Edge on a computer, with the page opened in a normal browser tab.");
+    return;
+  }
+  try {
+    s.port = await navigator.serial.requestPort();
+    await s.port.open({ baudRate: 115200 });
+    s.writer = s.port.writable.getWriter();
+    updateArmChip("Arm: starting…");
+    setTimeout(() => {              // opening the port resets most Arduinos
+      s.ready = true; s.last = null;
+      sendToArm(demo.angles, true);
+      updateArmChip();
+    }, 2000);
+  } catch (e) {
+    if (e.name !== "NotFoundError") showNotice("Couldn't open the arm's port: " + (e.message || e.name));
+    await closeSerial();
+  }
+  updateArmChip();
+}
+async function closeSerial() {
+  const s = demo.serial;
+  s.ready = false;
+  try { if (s.writer) { s.writer.releaseLock(); } } catch (_) {}
+  try { if (s.port) await s.port.close(); } catch (_) {}
+  s.port = null; s.writer = null;
+  updateArmChip();
+}
+function sendToArm(a, force = false) {
+  const s = demo.serial, now = performance.now();
+  if (!force && now - s.lastT < 1000 / SEND_HZ) return;
+  if (!force && s.last && Math.max(...JOINTS.map((j) => Math.abs(a[j] - s.last[j]))) < DEADBAND_DEG) return;
+  demo.packet = encodePacket(a).trim();
+  s.last = { ...a }; s.lastT = now;
+  if (s.ready && s.writer) {
+    s.writer.write(new TextEncoder().encode(demo.packet + "\n")).catch(() => {
+      showNotice("The arm was disconnected.");
+      closeSerial();
+    });
+  }
+}
+
+/* ---- UI ---- */
+function setMode(mode) {
+  demo.mode = mode;
+  if (mode !== "camera") stopCamera();
+  demo.landmarks = null;
+  $("mode-label").textContent = { sample: "Sample motion", camera: "Camera", mouse: "Mouse / touch" }[mode];
+  $("start-btns").hidden = mode !== "sample";
+  $("manual").hidden = mode !== "mouse";
+  $("stage-text").hidden = mode === "mouse";
+  $("stage-text").textContent = mode === "camera"
+    ? "Hold up one hand, palm facing the camera, about an arm's length away."
+    : "Your webcam stays in your browser. Frames are never uploaded.";
+  $("fps").textContent = "";
+  if (mode === "mouse") stageCanvas.focus({ preventScroll: true });
+}
+function setBusy(busy, text) {
+  for (const id of ["btn-camera", "btn-camera-2", "btn-mouse"]) $(id).disabled = busy;
+  if (busy) { $("stage-text").hidden = false; $("stage-text").textContent = text; }
+}
+function showNotice(text) { const n = $("notice"); n.textContent = text; n.hidden = false; }
+function hideNotice() { $("notice").hidden = true; }
+function updateArmChip(text) {
+  const s = demo.serial, chip = $("chip-arm");
+  chip.textContent = text || (s.ready ? "Arm: connected" : s.port ? "Arm: starting…" : "Arm: not connected");
+  chip.classList.toggle("on", !!s.ready);
+  $("btn-serial").textContent = s.port ? "Disconnect arm" : "Connect arm (USB)";
+}
+
+const jointEls = Object.fromEntries([...document.querySelectorAll(".joint")].map((el) =>
+  [el.dataset.j, { val: el.querySelector(".val"), bar: el.querySelector(".bar i") }]));
+let lastUi = 0;
+function updatePanel() {
+  const has = !!demo.features, a = demo.angles, fist = demo.fist.closed;
+  const hint = $("hint");
+  let text, cls = "";
+  if (demo.paused) { text = "Paused. The arm is frozen. Press Resume to continue."; cls = "warn"; }
+  else if (demo.mode === "sample") { text = "Sample motion. Start the camera or use your mouse to take control."; }
+  else if (!has) { text = "Raise one hand into view, palm facing the camera."; cls = "warn"; }
+  else if (demo.floorLimited) { text = "Floor limit: the arm is held just above the floor. Raise your hand to move it up."; cls = "warn"; }
+  else if (fist) { text = "Gripping. Open your hand to let go."; cls = "grip"; }
+  else if (demo.mode === "mouse") { text = "Move the pointer over the pad. Hold the mouse button, or turn on Grip, to close the gripper."; cls = "ok"; }
+  else { text = "Tracking. Move slowly; make a fist to grab."; cls = "ok"; }
+  if (hint.textContent !== text) hint.textContent = text;
+  hint.className = "hint " + cls;
+  $("chip-hand").textContent = demo.mode === "sample" ? "Hand: sample" : "Hand: " + (has ? "detected" : "not found");
+  $("chip-hand").classList.toggle("on", has && demo.mode !== "sample");
+  for (const j of JOINTS) {
+    const { val, bar } = jointEls[j], [mn, mx] = SERVOS[j];
+    const t = Math.max(0, Math.min(1, (a[j] - mn) / (mx - mn)));
+    if (j === "gripper") {
+      val.textContent = fist ? "CLOSED" : "OPEN";
+      val.className = "val" + (fist ? " grip" : "");
+      bar.className = fist ? "grip" : "";
+    } else {
+      val.textContent = Math.round(a[j]) + "°";
+      val.className = "val" + (has ? "" : " idle");
+    }
+    bar.style.width = (t * 100).toFixed(1) + "%";
+  }
+  $("floor-badge").hidden = !demo.floorLimited;
+  $("btn-pause").textContent = demo.paused ? "Resume" : "Pause";
+  if (demo.packet) $("packet").textContent = demo.packet;
+  if (demo.mode === "camera") $("fps").textContent = demo.fps.toFixed(0) + " FPS";
+}
+
+/* ---- stage drawing ---- */
+function drawStage() {
+  const c = stageCanvas, dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  if (w < 10 || h < 10) return;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  const ctx = c.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const cs = getComputedStyle(document.documentElement);
+  const col = (n) => cs.getPropertyValue(n).trim();
+  ctx.fillStyle = col("--stage"); ctx.fillRect(0, 0, w, h);
+  const fist = demo.fist.closed;
+  const boneColor = fist ? col("--grip") : col("--arm");
+
+  if (demo.mode === "camera") {
+    const v = $("video");
+    if (v.readyState >= 2 && v.videoWidth) {
+      const sc = Math.max(w / v.videoWidth, h / v.videoHeight), dw = v.videoWidth * sc, dh = v.videoHeight * sc;
+      const ox = (w - dw) / 2, oy = (h - dh) / 2;
+      ctx.save(); ctx.translate(w, 0); ctx.scale(-1, 1); ctx.drawImage(v, ox, oy, dw, dh); ctx.restore();
+      const lm = demo.landmarks;
+      if (lm) {
+        const pts = lm.map((p) => [ox + p.x * dw, oy + p.y * dh]);
+        const t = Math.max(2, w / 220);
+        ctx.lineCap = "round";
+        for (const [a, b] of HAND_CONNECTIONS) {
+          ctx.beginPath(); ctx.moveTo(...pts[a]); ctx.lineTo(...pts[b]);
+          ctx.strokeStyle = "rgba(10,12,14,0.85)"; ctx.lineWidth = t + 3; ctx.stroke();
+          ctx.strokeStyle = boneColor; ctx.lineWidth = t; ctx.stroke();
+        }
+        pts.forEach((p, i) => {
+          const r = (i === WRIST || i === MIDDLE_MCP) ? t + 3 : t + 1;
+          ctx.beginPath(); ctx.arc(p[0], p[1], r + 1, 0, 2 * Math.PI); ctx.fillStyle = "rgba(10,12,14,0.9)"; ctx.fill();
+          ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, 2 * Math.PI); ctx.fillStyle = "#ffffff"; ctx.fill();
+        });
+        ctx.beginPath(); ctx.arc(...pts[MIDDLE_MCP], t * 5, 0, 2 * Math.PI);
+        ctx.strokeStyle = boneColor; ctx.lineWidth = t; ctx.stroke();
+      }
+    }
+    return;
+  }
+
+  // Sample motion and mouse mode: a control pad with a virtual palm.
+  ctx.strokeStyle = "rgba(233,237,240,0.07)"; ctx.lineWidth = 1;
+  for (let i = 1; i < 8; i++) {
+    ctx.beginPath(); ctx.moveTo((w * i) / 8, 0); ctx.lineTo((w * i) / 8, h); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, (h * i) / 8); ctx.lineTo(w, (h * i) / 8); ctx.stroke();
+  }
+  ctx.strokeStyle = "rgba(233,237,240,0.18)";
+  ctx.setLineDash([4, 6]);
+  ctx.strokeRect(w * X_RANGE[0], h * Y_RANGE[0], w * (X_RANGE[1] - X_RANGE[0]), h * (Y_RANGE[1] - Y_RANGE[0]));
+  ctx.setLineDash([]);
+  const f = demo.features;
+  if (!f) return;
+  const px = f.x * w, py = f.y * h;
+  const r = Math.max(14, f.size * Math.min(w, h) * 1.1);
+  ctx.save(); ctx.translate(px, py); ctx.rotate(rad(f.roll));
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, 2 * Math.PI);
+  ctx.fillStyle = fist ? boneColor : "rgba(233,237,240,0.06)"; ctx.globalAlpha = fist ? 0.35 : 1; ctx.fill();
+  ctx.globalAlpha = 1; ctx.strokeStyle = boneColor; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-r * 1.25, 0); ctx.lineTo(r * 1.25, 0); ctx.stroke();   // knuckle line = tilt
+  ctx.restore();
+  ctx.beginPath(); ctx.arc(px, py, 4, 0, 2 * Math.PI); ctx.fillStyle = "#ffffff"; ctx.fill();
+  ctx.font = "500 12px " + col("--mono");
+  ctx.fillStyle = "rgba(233,237,240,0.75)";
+  ctx.fillText(`x ${f.x.toFixed(2)}  y ${f.y.toFixed(2)}  size ${f.size.toFixed(3)}  tilt ${f.roll >= 0 ? "+" : ""}${f.roll.toFixed(0)}°`, 12, h - 14);
+  ctx.fillText("tracking area", w * X_RANGE[0] + 6, h * Y_RANGE[0] + 16);
+}
+
+/* ---- main loop ---- */
+const t0 = performance.now();
+function tick(now) {
+  if (demo.mode === "camera" && demo.landmarker) {
+    const v = $("video");
+    if (v.readyState >= 2 && v.currentTime !== demo.lastVideoTime) {
+      demo.lastVideoTime = v.currentTime;
+      const res = demo.landmarker.detectForVideo(v, now);
+      demo.landmarks = res.landmarks && res.landmarks.length
+        ? res.landmarks[0].map((p) => ({ x: 1 - p.x, y: p.y }))          // mirror, like the app
+        : null;
+      processFeatures(demo.landmarks ? handFeatures(demo.landmarks) : null);
+      demo.frames++;
+      if (now - demo.fpsT >= 1000) { demo.fps = demo.frames * 1000 / (now - demo.fpsT); demo.frames = 0; demo.fpsT = now; }
+    }
+  } else if (demo.mode === "mouse") {
+    processFeatures(pointerFeatures());
+  } else if (demo.mode === "sample") {
+    processFeatures(reducedMotion.matches ? null : sampleFeatures((now - t0) / 1000));
+  }
+  drawStage();
+  arm3d.setPose(demo.angles, demo.fist.closed, demo.floorLimited);
+  if (now - lastUi > 60) { lastUi = now; updatePanel(); }
+  requestAnimationFrame(tick);
+}
+
+/* ---- wiring ---- */
+$("btn-camera").addEventListener("click", startCamera);
+$("btn-camera-2").addEventListener("click", startCamera);
+$("btn-mouse").addEventListener("click", () => { hideNotice(); setMode("mouse"); });
+$("btn-grip").addEventListener("click", (e) => {
+  demo.pointer.grip = !demo.pointer.grip;
+  e.currentTarget.setAttribute("aria-pressed", String(demo.pointer.grip));
+});
+$("btn-pause").addEventListener("click", () => { demo.paused = !demo.paused; updatePanel(); });
+$("btn-home").addEventListener("click", () => {
+  demo.smoother.reset();
+  [demo.angles, demo.floorLimited] = enforceFloor(demo.smoother.state);
+  sendToArm(demo.angles, true);
+  updatePanel();
+});
+$("btn-serial").addEventListener("click", toggleSerial);
+$("console").addEventListener("keydown", (e) => {
+  if (e.target.closest("input, button")) return;
+  if (e.key === " ") { demo.paused = !demo.paused; e.preventDefault(); }
+  else if (e.key === "h" || e.key === "H") $("btn-home").click();
+});
+const themeChanged = () => arm3d.refreshPalette();
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", themeChanged);
+new MutationObserver(themeChanged).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+if (document.fonts) document.fonts.ready.then(() => arm3d.redraw());
+
+window.armDemo = { demo, handFeatures, featuresToTargets, enforceFloor, floorClearance, armKinematics, processFeatures, setMode };
+updatePanel();
+arm3d.redraw();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
